@@ -1,0 +1,31 @@
+﻿
+# Telegram Configuration
+telegram_token: "7966861727:AAHE-TDH2sZNxWhwRSZO2B48-4cKP6cuCE0" # Token của bot Telegram của bạn
+telegram_chat_id: "5184726235" # ID chat của bạn với bot
+
+# Binance API Configuration  
+api_key: "YOUR_BINANCE_API_KEY"
+api_secret: "YOUR_BINANCE_API_SECRET"
+
+# Trading Configuration
+min_volume: 1000000 # Minimum 24h volume in USDT
+min_confidence: 70 # Minimum confidence score (0-100)
+timeframes: # Timeframes to scan
+  - "1m"
+  - "5m" 
+  - "15m"
+  - "1h"
+  - "4h"
+
+# Order Configuration
+order_size: 100 # USDT size per order
+max_orders: 10 # Maximum concurrent orders
+risk_per_trade: 1 # Risk percentage per trade (1 = 1%)
+
+# GUI Configuration
+gui_enabled: true
+gui_update_interval: 1 # Update interval in seconds
+
+# WebSocket Configuration 
+ws_host: "localhost"
+ws_port: 8765

@@ -1,9 +1,8 @@
 """
 Order Manager for Trading Bot
-Handles order creation and management with Binance
 Author: Anhbaza01
 Version: 1.0.0
-Last Updated: 2025-05-24 09:16:42 UTC
+Last Updated: 2025-05-24 10:11:16 UTC
 """
 
 import os
@@ -17,7 +16,7 @@ from binance.exceptions import BinanceAPIException
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from shared.constants import TradingConfig as Config
+from shared.constants import Config, OrderType, OrderSide, OrderStatus, TimeInForce
 
 class OrderManager:
     def __init__(
@@ -27,6 +26,7 @@ class OrderManager:
     ):
         self.client = client
         self.logger = logger or logging.getLogger(__name__)
+        self.telegram = None  # Will be set by TradeManager
         self.open_orders = {}
         self.order_updates = {}
 
@@ -128,7 +128,7 @@ class OrderManager:
             qty = self._calculate_quantity(
                 symbol,
                 price,
-                quantity,
+                Config.ORDER_SIZE,  # Using Config instead of TradingConfig
                 info['step_size']
             )
             
@@ -138,9 +138,9 @@ class OrderManager:
             # Create main order
             order = self.client.create_order(
                 symbol=symbol,
-                side='BUY' if side == 'LONG' else 'SELL',
-                type='LIMIT',
-                timeInForce='GTC',
+                side=OrderSide.BUY.value if side == 'LONG' else OrderSide.SELL.value,
+                type=OrderType.LIMIT.value,
+                timeInForce=TimeInForce.GTC.value,
                 quantity=qty,
                 price=price
             )
@@ -151,12 +151,12 @@ class OrderManager:
             # Create OCO order
             oco = self.client.create_oco_order(
                 symbol=symbol,
-                side='SELL' if side == 'LONG' else 'BUY',
+                side=OrderSide.SELL.value if side == 'LONG' else OrderSide.BUY.value,
                 quantity=qty,
                 price=take_profit,
                 stopPrice=stop_loss,
                 stopLimitPrice=stop_loss,
-                stopLimitTimeInForce='GTC'
+                stopLimitTimeInForce=TimeInForce.GTC.value
             )
             
             if not oco:
@@ -173,6 +173,17 @@ class OrderManager:
                 'oco': oco
             }
             
+            # Send telegram notification
+            if self.telegram:
+                await self.telegram.send_order({
+                    'symbol': symbol,
+                    'side': side,
+                    'type': OrderType.LIMIT.value,
+                    'quantity': qty,
+                    'price': price,
+                    'status': OrderStatus.NEW.value
+                })
+            
             return {
                 'symbol': symbol,
                 'orderId': order['orderId'],
@@ -181,7 +192,7 @@ class OrderManager:
                 'price': price,
                 'stopLoss': stop_loss,
                 'takeProfit': take_profit,
-                'status': 'NEW'
+                'status': OrderStatus.NEW.value
             }
             
         except BinanceAPIException as e:
@@ -217,6 +228,14 @@ class OrderManager:
                     
                 del self.open_orders[symbol]
                 
+            # Send telegram notification
+            if self.telegram:
+                await self.telegram.send_order({
+                    'symbol': symbol,
+                    'orderId': order_id,
+                    'status': OrderStatus.CANCELED.value
+                })
+                
             return True
             
         except BinanceAPIException as e:
@@ -249,13 +268,23 @@ class OrderManager:
             # Create market close order
             close_order = self.client.create_order(
                 symbol=symbol,
-                side='SELL' if position['main']['side'] == 'BUY' else 'BUY',
-                type='MARKET',
+                side=OrderSide.SELL.value if position['main']['side'] == OrderSide.BUY.value else OrderSide.BUY.value,
+                type=OrderType.MARKET.value,
                 quantity=position['main']['origQty']
             )
             
             if not close_order:
                 raise ValueError("Failed to create close order")
+                
+            # Send telegram notification
+            if self.telegram:
+                await self.telegram.send_order({
+                    'symbol': symbol,
+                    'type': OrderType.MARKET.value,
+                    'quantity': float(close_order['origQty']),
+                    'price': float(close_order['price']),
+                    'status': close_order['status']
+                })
                 
             return {
                 'symbol': symbol,

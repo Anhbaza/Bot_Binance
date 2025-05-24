@@ -1,225 +1,394 @@
 """
-Main Bot Runner
-Starts and manages Signal Bot and Trade Manager
+Main Bot Manager
 Author: Anhbaza01
 Version: 1.0.0
-Last Updated: 2025-05-24 08:48:30 UTC
+Last Updated: 2025-05-24 09:55:30 UTC
 """
 
 import os
 import sys
 import yaml
-import asyncio
 import logging
+import asyncio
+import threading
 from datetime import datetime
+from binance.client import Client
+
+# Add project root to path for imports
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, PROJECT_ROOT)
+
+# Import components
 from signal_bot.signal_bot import SignalBot
 from trade_manager.trade_manager import TradeManager
+from trade_manager.gui_manager import GUIManager 
 from shared.websocket_server import WebSocketServer
+from shared.telegram_handler import TelegramHandler
+from shared.constants import Config
 
 class BotManager:
     def __init__(self):
+        self.user = os.getenv('USER', 'Anhbaza01')
         self.logger = self._setup_logging()
-        self.config = self._load_config()
         self._is_running = True
-        
+
+        # Load config
+        self.config = self._load_config()
+
         # Components
         self.ws_server = None
-        self.signal_bot = None
+        self.signal_bot = None 
         self.trade_manager = None
+        self.gui_manager = None
+        self.telegram = None
 
-    def _setup_logging(self) -> logging.Logger:
-        """Setup logging"""
-        try:
-            # Create logs directory
-            logs_dir = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                'logs'
-            )
-            os.makedirs(logs_dir, exist_ok=True)
-            
-            # Log filename
-            log_filename = os.path.join(
-                logs_dir,
-                f'bot_manager_{datetime.utcnow().strftime("%Y%m%d")}.log'
-            )
-            
-            # Configure logging
-            logging.basicConfig(
-                level=logging.INFO,
-                format='%(asctime)s UTC | %(levelname)s | %(message)s',
-                handlers=[
-                    logging.FileHandler(log_filename),
-                    logging.StreamHandler(sys.stdout)
-                ],
-                datefmt='%Y-%m-%d %H:%M:%S'
-            )
-            
-            logger = logging.getLogger("BotManager")
-            
-            # Log startup
-            logger.info("="*50)
-            logger.info("Bot Manager - Starting Up")
-            logger.info(f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
-            logger.info(f"User: {os.getenv('USER', 'Anhbaza01')}")
-            logger.info("="*50)
-            
-            return logger
-            
-        except Exception as e:
-            print(f"Error setting up logging: {str(e)}")
-            logging.basicConfig(level=logging.INFO)
-            return logging.getLogger("BotManager")
+    def _setup_logging(self):
+     """Setup logging"""
+     try:
+        # Create logs directory
+        logs_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            'logs'
+        )
+        os.makedirs(logs_dir, exist_ok=True)
 
-    def _load_config(self) -> dict:
-        """Load configuration"""
-        try:
-            config_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                'config/config.yaml'
-            )
-            
-            with open(config_path, 'r') as f:
-                config = yaml.safe_load(f)
-                
-            self.logger.info("Configuration loaded successfully")
-            return config
-            
-        except Exception as e:
-            self.logger.error(f"Error loading config: {str(e)}")
-            return {}
+        # Log filename
+        log_file = os.path.join(
+            logs_dir,
+            f'bot_{datetime.utcnow().strftime("%Y%m%d")}.log'
+        )
 
-    async def start_websocket_server(self):
-        """Start WebSocket server"""
-        try:
-            ws_config = self.config['websocket']
-            
-            self.ws_server = WebSocketServer(
-                host=ws_config['host'],
-                port=ws_config['port'],
-                logger=self.logger
-            )
-            
-            # Start server
-            await self.ws_server.start()
-            
-            self.logger.info("WebSocket server started successfully")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Error starting WebSocket server: {str(e)}")
+        # Configure logger
+        logger = logging.getLogger('BotManager')
+        logger.setLevel(logging.INFO)
+
+        # File handler with UTF-8 encoding
+        fh = logging.FileHandler(log_file, encoding='utf-8')
+        fh.setLevel(logging.INFO)
+
+        # Console handler with UTF-8 encoding
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setLevel(logging.INFO)
+
+        # Formatter
+        formatter = logging.Formatter(
+            '%(asctime)s UTC | %(levelname)s | %(message)s',
+            '%Y-%m-%d %H:%M:%S'
+        )
+        fh.setFormatter(formatter)
+        ch.setFormatter(formatter)
+
+        # Remove existing handlers
+        logger.handlers = []
+
+        # Add handlers
+        logger.addHandler(fh)
+        logger.addHandler(ch)
+
+        return logger
+
+     except Exception as e:
+        print(f"Error setting up logging: {str(e)}")
+        return logging.getLogger('BotManager')
+
+    def _load_config(self):
+     """Load configuration from YAML file"""
+     try:
+        config_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            'config.yaml'
+        )
+        
+        if not os.path.exists(config_path):
+            self.logger.error(f"Config file not found: {config_path}")
             return False
 
-    async def start_signal_bot(self):
-        """Start Signal Bot"""
+        with open(config_path, 'r', encoding='utf-8') as f:
+            self.config = yaml.safe_load(f)
+
+        # Validate required fields
+        required_fields = [
+            'telegram_token',
+            'telegram_chat_id',
+            'api_key',
+            'api_secret'
+        ]
+
+        for field in required_fields:
+            if field not in self.config:
+                self.logger.error(f"Missing required config field: {field}")
+                return False
+
+        # Log config (excluding sensitive data)
+        self.logger.info("Configuration loaded:")
+        self.logger.info(f"- Telegram Bot: Configured")
+        self.logger.info(f"- Telegram Chat ID: {self.config['telegram_chat_id']}")
+        self.logger.info(f"- Min Volume: ${self.config.get('min_volume', 1000000):,}")
+        self.logger.info(f"- Min Confidence: {self.config.get('min_confidence', 70)}%")
+        self.logger.info(f"- Timeframes: {', '.join(self.config.get('timeframes', ['1m','5m','15m','1h']))}")
+        self.logger.info(f"- Order Size: ${self.config.get('order_size', 100):,}")
+        self.logger.info(f"- Max Orders: {self.config.get('max_orders', 10)}")
+        self.logger.info(f"- Risk Per Trade: {self.config.get('risk_per_trade', 1)}%")
+
+        return True
+
+     except Exception as e:
+        self.logger.error(f"Error loading config: {str(e)}")
+        return False
+
+    async def setup_telegram(self) -> bool:
+        """Setup Telegram notifications"""
         try:
-            self.signal_bot = SignalBot()
-            
-            # Run in background
-            asyncio.create_task(self.signal_bot.run())
-            
-            self.logger.info("Signal Bot started successfully")
+            # Get Telegram config
+            token = self.config['telegram']['token']
+            chat_id = self.config['telegram']['chat_id']
+
+            # Initialize handler
+            self.telegram = TelegramHandler(
+                token,
+                chat_id,
+                self.logger
+            )
+
+            # Test connection
+            await self.telegram.send_message(
+                "🤖 Trading Bot Started\n\n"
+                f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+                f"User: {self.user}\n"
+                f"Mode: {'Test' if self.config['binance']['testnet'] else 'Live'}"
+            )
+
+            self.logger.info("Telegram notifications setup successful")
             return True
-            
+
         except Exception as e:
-            self.logger.error(f"Error starting Signal Bot: {str(e)}")
+            self.logger.error(f"Telegram setup error: {str(e)}")
             return False
 
-    async def start_trade_manager(self):
-        """Start Trade Manager"""
+    async def setup_binance(self) -> Client:
+        """Setup Binance API client"""
         try:
-            self.trade_manager = TradeManager()
-            
-            # Run in background
-            asyncio.create_task(self.trade_manager.run())
-            
-            self.logger.info("Trade Manager started successfully")
-            return True
-            
+            self.logger.info("Setting up Binance client...")
+
+            # Get API credentials
+            api_key = self.config['binance']['api_key']
+            api_secret = self.config['binance']['api_secret']
+            testnet = self.config['binance']['testnet']
+
+            # Initialize client
+            client = Client(
+                api_key,
+                api_secret,
+                testnet=testnet
+            )
+
+            # Test connection
+            server_time = client.get_server_time()
+            if not server_time:
+                raise ConnectionError("Could not get server time")
+
+            self.logger.info("Binance client setup successful")
+            return client
+
         except Exception as e:
-            self.logger.error(f"Error starting Trade Manager: {str(e)}")
+            self.logger.error(f"Binance setup error: {str(e)}")
+            return None
+
+    async def initialize(self):
+     """Initialize Bot Manager"""
+     try:
+        self.logger.info("="*50)
+        self.logger.info("Bot Manager - Starting Up")
+        self.logger.info(f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+        self.logger.info(f"User: {os.getenv('USER', 'Anhbaza01')}")
+        self.logger.info("="*50)
+
+        # Load config
+        if not self._load_config():
             return False
+
+        # Setup Telegram
+        self.telegram = TelegramHandler(
+            self.config['telegram_token'],
+            self.config['telegram_chat_id']
+        )
+
+        # Test Telegram
+        if not await self.telegram.send_message(
+            "🤖 Trading Bot Starting\n\n"
+            f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+            f"User: {os.getenv('USER', 'Anhbaza01')}"
+        ):
+            self.logger.error("Failed to send Telegram message")
+            return False
+
+        self.logger.info("Telegram notifications setup successful")
+
+        # Setup Binance client
+        self.logger.info("Setting up Binance client...")
+        self.client = Client(
+            self.config['api_key'],
+            self.config['api_secret']
+        )
+        self.logger.info("Binance client setup successful")
+
+        # Initialize Signal Bot
+        self.signal_bot = SignalBot()
+        self.signal_bot.telegram = self.telegram
+        if not await self.signal_bot.initialize(self.client):
+            return False
+
+        # Initialize Trade Manager
+        self.trade_manager = TradeManager()
+        self.trade_manager.telegram = self.telegram
+        if not await self.trade_manager.initialize(self.client):
+            return False
+
+        # Setup WebSocket server
+        self.ws_server = WebSocketServer(
+            self.signal_bot,
+            self.trade_manager
+        )
+        await self.ws_server.start()
+
+        return True
+
+     except Exception as e:
+        self.logger.error(f"Initialization error: {str(e)}")
+        return False
 
     async def run(self):
-        """Run all components"""
+     """Run Bot Manager"""
+     try:
+        # Initialize
+        if not await self.initialize():
+            self.logger.error("Failed to initialize")
+            return
+
+        # Start GUI in main thread
+        if self.gui_manager:
+            self.gui_manager.start()
+            await asyncio.sleep(1)
+
+        # Start Signal Bot
+        self.logger.info("\nStarting Signal Bot...")
+        signal_bot_task = asyncio.create_task(self.signal_bot.run())
+
+        # Start Trade Manager
+        self.logger.info("Starting Trade Manager...")
+        trade_manager_task = asyncio.create_task(self.trade_manager.run())
+
+        # Wait for completion
+        await asyncio.gather(
+            signal_bot_task,
+            trade_manager_task
+        )
+
+     except KeyboardInterrupt:
+        self.logger.info("Bot Manager stopped by user")
+     except Exception as e:
+        self.logger.error(f"Fatal error: {str(e)}")
+     finally:
+        await self.stop()
+    async def stop(self):
+        """Stop Bot Manager"""
         try:
-            # Start WebSocket server first
-            if not await self.start_websocket_server():
-                raise Exception("Failed to start WebSocket server")
-                
-            # Wait for server to initialize
-            await asyncio.sleep(2)
-            
-            # Start bots
-            if not all([
-                await self.start_signal_bot(),
-                await self.start_trade_manager()
-            ]):
-                raise Exception("Failed to start bots")
-                
-            self.logger.info("[+] All components started successfully")
-            
-            # Keep running
-            while self._is_running:
-                await asyncio.sleep(1)
-                
-        except KeyboardInterrupt:
-            self.logger.info("Stopping by user request...")
-        except Exception as e:
-            self.logger.error(f"Fatal error: {str(e)}")
-        finally:
-            # Cleanup
             self._is_running = False
-            
+
+            # Stop components
             if self.signal_bot:
                 await self.signal_bot.stop()
-                
+
             if self.trade_manager:
                 await self.trade_manager.stop()
-                
+
+            if self.gui_manager:
+                self.gui_manager.stop()
+
             if self.ws_server:
                 await self.ws_server.stop()
-                
-            self.logger.info("All components stopped")
+
+            # Send notification
+            if self.telegram:
+                await self.telegram.send_message(
+                    "🛑 Trading Bot Stopped\n\n"
+                    f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
+                )
+
+            self.logger.info("Bot Manager stopped")
+
+        except Exception as e:
+            self.logger.error(f"Error stopping manager: {str(e)}")
 
 def main():
-    """Main entry point"""
+    """Main function"""
     try:
-        # Create manager
-        manager = BotManager()
+        current_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        current_user = os.getenv('USER', 'Anhbaza01')
         
+        print(f"\n{'='*50}")
+        print(f"Trading Bot Starting Up")
+        print(f"Time: {current_time} UTC")
+        print(f"User: {current_user}")
+        print(f"{'='*50}\n")
+        
+        # Create Bot Manager
+        manager = BotManager()
+
         # Set Windows event loop policy if needed
         if os.name == 'nt':
             asyncio.set_event_loop_policy(
                 asyncio.WindowsSelectorEventLoopPolicy()
             )
-            
-        # Create event loop
+
+        # Create and set event loop
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        
-        # Run manager
-        loop.run_until_complete(manager.run())
-        
-    except KeyboardInterrupt:
-        print("\nStopping by user request...")
-    except Exception as e:
-        print(f"\nFatal error: {str(e)}")
-    finally:
+
+        # Create GUI first
+        print("Initializing GUI...")
+        manager.gui_manager = GUIManager(manager.trade_manager)
+        root = manager.gui_manager.create_gui()
+
+        # Create async task for bot operations
+        async def run_bot():
+            try:
+                print("Initializing bot systems...")
+                await manager.initialize()
+                print("Starting bot operations...")
+                await manager.run()
+            except Exception as e:
+                print(f"Bot operation error: {str(e)}")
+
+        # Run bot in background
+        def run_async():
+            try:
+                loop.run_until_complete(run_bot())
+            except Exception as e:
+                print(f"Async runtime error: {str(e)}")
+
+        # Start bot in separate thread
+        print("Starting bot in background...")
+        bot_thread = threading.Thread(target=run_async, daemon=True)
+        bot_thread.start()
+
+        # Start GUI mainloop in main thread
+        print("Starting GUI...")
         try:
-            loop = asyncio.get_event_loop()
-            
-            # Cancel pending tasks
-            tasks = [t for t in asyncio.all_tasks(loop) if not t.done()]
-            if tasks:
-                loop.run_until_complete(
-                    asyncio.gather(*tasks, return_exceptions=True)
-                )
-                
-            # Close loop
-            loop.close()
-            
+            root.mainloop()
         except Exception as e:
-            print(f"\nError during shutdown: {str(e)}")
+            print(f"GUI runtime error: {str(e)}")
+        finally:
+            print("\nShutting down bot systems...")
+            # Cleanup when GUI closes
+            loop.call_soon_threadsafe(loop.stop)
+            bot_thread.join(timeout=5.0)
+            loop.close()
+
+    except Exception as e:
+        print(f"\nStartup error: {str(e)}")
+    finally:
+        print("\nTrading Bot shutdown complete")
 
 if __name__ == "__main__":
     main()

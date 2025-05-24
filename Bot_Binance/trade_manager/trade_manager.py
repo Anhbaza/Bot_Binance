@@ -24,24 +24,37 @@ from shared.websocket_client import WebSocketClient
 from shared.constants import MessageType, ClientType, SignalType
 
 class TradeManager:
-    def __init__(self):
-        self.user = os.getenv('USER', 'Anhbaza01')
-        self.logger = self._setup_logging()
-        self._is_running = True
-        
-        # Components
-        self.client = None
-        self.order_manager = None
-        self.gui_manager = None
-        self.ws_client = None
-        
-        # State
-        self.open_trades = {}
-        self.trade_history = []
-        self.active_signals = {}
-        
-        # Load config
-        self.config = self._load_config()
+    def __init__(self, client=None):
+        """Initialize Trade Manager"""
+        self.client = client
+        self.logger = logging.getLogger('TradeManager')
+        self.telegram = None
+        self._is_running = False
+        self.orders = []
+        self.trades = []
+
+    async def initialize(self, client=None):
+        """Initialize Trade Manager"""
+        try:
+            if client:
+                self.client = client
+                
+            if not self.client:
+                self.logger.error("No Binance client provided")
+                return False
+
+            # Test connection
+            try:
+                account = self.client.get_account()
+                self.logger.info("Trade Manager initialized successfully")
+                return True
+            except Exception as e:
+                self.logger.error(f"Failed to connect to Binance: {str(e)}")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Trade Manager initialization error: {str(e)}")
+            return False
 
     def _setup_logging(self) -> logging.Logger:
         """Setup logging configuration"""

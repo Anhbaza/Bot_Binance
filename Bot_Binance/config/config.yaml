@@ -1,138 +1,75 @@
 # Trading Bot Configuration
-# Author: Anhbaza01
-# Version: 1.0.0
-# Last Updated: 2025-05-24 08:42:09 UTC
 
-# Author Information
-author:
-  name: "Anhbaza01"
-  version: "1.0.0"
-  last_updated: "2025-05-24 08:42:09"
+# Binance API Settings
+binance:
+  api_key: "your_api_key"
+  api_secret: "your_api_secret"
+  testnet: true  # Set to false for live trading
 
-# WebSocket settings
+# Telegram Settings
+telegram:
+  token: "7966861727:AAHE-TDH2sZNxWhwRSZO2B48-4cKP6cuCE0"
+  chat_id: "5184726235"
+
+# WebSocket Settings  
 websocket:
   host: "localhost"
   port: 8765
-  reconnect_interval: 5  # seconds
-  heartbeat_interval: 30 # seconds
 
-# Database settings
-database:
-  path: "database/trading.db"
-  backup_interval: 86400  # 24 hours
-  backup_count: 5        # Keep last 5 backups
-
-# Binance API settings
-binance:
-  testnet: true  # Use testnet for testing
-  api_key: ""    # Your API key here
-  api_secret: "" # Your API secret here
-  endpoints:
-    spot: "https://api.binance.com"
-    spot_test: "https://testnet.binance.vision"
-  timeout: 10000   # API timeout in milliseconds
-  recv_window: 5000 # recvWindow parameter for API calls
-
-# Trading settings
+# Trading Parameters
 trading:
-  # General settings
-  mode: "spot"           # Trading mode (spot/futures)
-  test_mode: true       # Run in test mode
-  max_trades: 5         # Maximum concurrent trades
-  order_size: 100.0     # Fixed order size in USDT
-  leverage: 1           # Default leverage (1-125)
+  # Minimum 24h USDT volume for trading pairs
+  min_volume: 1000000  # $1M USD
+  
+  # Maximum number of concurrent trades
+  max_trades: 5
+  
+  # Order size in USDT
+  order_size: 100
   
   # Risk management
-  risk_per_trade: 1.0   # Risk per trade (%)
-  max_risk_total: 5.0   # Maximum total risk (%)
-  min_profit: 0.5       # Minimum profit target (%)
-  profit_risk_ratio: 2.0 # Profit:Risk ratio
+  max_loss_percent: 2.0  # Maximum loss per trade
+  daily_loss_limit: 5.0  # Maximum daily loss
   
-  # Volume filters
-  min_volume: 1000000   # Minimum 24h volume in USDT
-  volume_ma_period: 24  # Volume MA period in hours
-  volume_ratio_min: 1.5 # Minimum volume ratio for signal
+  # Take profit and stop loss defaults
+  default_tp_percent: 1.0
+  default_sl_percent: 0.5
 
-# Signal settings
+# Signal Detection
 signals:
-  # RSI settings
-  rsi_period: 14
-  rsi_overbought: 70
-  rsi_oversold: 30
-  
-  # MA settings
-  fast_ma: 9
-  slow_ma: 21
-  signal_ma: 9
-  
-  # Volume settings
-  volume_period: 20
-  volume_threshold: 2.0
-  
-  # Confidence settings
-  min_confidence: 70.0
-  trend_weight: 30
-  volume_weight: 30
-  pattern_weight: 20
-  rsi_weight: 20
-
-# Timeframes to monitor
-timeframes:
-  - "1m"
-  - "5m"
-  - "15m"
-  - "1h"
-  - "4h"
-  - "1d"
-
-# Notification settings
-notifications:
-  # Telegram settings
-  telegram:
-    enabled: false
-    token: ""
-    chat_id: ""
+  # Timeframes to scan
+  timeframes:
+    - "1m"
+    - "5m"
+    - "15m"
+    - "1h"
+    - "4h"
     
-  # Email settings  
-  email:
-    enabled: false
-    smtp_server: "smtp.gmail.com"
-    smtp_port: 587
-    username: ""
-    password: ""
-    from_addr: ""
-    to_addr: ""
+  # Minimum confidence score (0-100)
+  min_confidence: 70
+  
+  # Technical indicators
+  rsi_period: 14
+  fast_ma: 12
+  slow_ma: 26
+  volume_period: 20
+  
+  # Volume requirements
+  volume_ratio_min: 1.5  # Minimum volume vs average
 
-# GUI settings
+# GUI Settings
 gui:
-  enabled: true
-  theme: "default"
-  update_interval: 1000  # Update interval in milliseconds
-  max_signals: 100      # Maximum signals to display
-  max_trades: 50        # Maximum trades history to display
+  # Update interval in milliseconds
+  update_interval: 1000
+  
+  # Colors
   colors:
-    profit: "#00ff00"   # Green
-    loss: "#ff0000"     # Red
-    neutral: "#ffffff"  # White
-    background: "#000000" # Black
-    text: "#ffffff"     # White
+    profit: "#4CAF50"
+    loss: "#F44336"
+    neutral: "#9E9E9E"
 
-# Logging settings
+# Logging
 logging:
   level: "INFO"
   format: "%(asctime)s UTC | %(levelname)s | %(message)s"
   date_format: "%Y-%m-%d %H:%M:%S"
-  file:
-    enabled: true
-    path: "logs/"
-    max_size: 10485760  # 10MB
-    backup_count: 5
-  console:
-    enabled: true
-    color: true
-
-# Development settings
-development:
-  debug: false
-  profile: false
-  test_data: false

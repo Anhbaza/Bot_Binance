@@ -1,8 +1,8 @@
 """
-Signal Analyzer Implementation without TA-Lib
+Signal Analyzer Implementation
 Author: Anhbaza01
 Version: 1.0.0
-Last Updated: 2025-05-24 09:15:00
+Last Updated: 2025-05-24 10:08:36 UTC
 """
 
 import os
@@ -16,7 +16,7 @@ from datetime import datetime
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from shared.constants import SignalType, TradingConfig as Config
+from shared.constants import Config, SignalType
 
 class SignalAnalyzer:
     def __init__(
@@ -189,10 +189,6 @@ class SignalAnalyzer:
             # Calculate indicators
             rsi = self._rsi(closes)
             
-            # Volume ratio
-            vol_ma = self._sma(volumes, Config.VOLUME_PERIOD)[-1]
-            vol_ratio = volumes[-1] / vol_ma if vol_ma > 0 else 0
-            
             # Moving averages
             fast_ma = self._sma(closes, 12)
             slow_ma = self._sma(closes, 26)
@@ -202,6 +198,10 @@ class SignalAnalyzer:
             
             # Signal line
             signal = self._sma(macd, 9)
+            
+            # Volume ratio
+            vol_ma = self._sma(volumes, Config.VOLUME_PERIOD)[-1]
+            vol_ratio = volumes[-1] / vol_ma if vol_ma > 0 else 0
             
             # Get current values
             curr_rsi = rsi[-1]
@@ -238,7 +238,7 @@ class SignalAnalyzer:
             self.logger.error(f"Error calculating confidence: {str(e)}")
             return 0
 
-    def analyze_klines(
+    async def analyze_klines(
         self,
         symbol: str,
         klines: List[List]
@@ -281,13 +281,6 @@ class SignalAnalyzer:
             if confidence < Config.MIN_CONFIDENCE:
                 return None
                 
-            # Calculate RSI
-            rsi = self._rsi(closes)
-            
-            # Calculate volume ratio
-            vol_ma = self._sma(volumes, Config.VOLUME_PERIOD)[-1]
-            vol_ratio = volumes[-1] / vol_ma if vol_ma > 0 else 0
-            
             # Create signal
             signal = {
                 'symbol': symbol,
@@ -296,8 +289,12 @@ class SignalAnalyzer:
                 'take_profit': round(tp, 8),
                 'stop_loss': round(sl, 8),
                 'confidence': confidence,
-                'rsi': round(rsi[-1], 2),
-                'volume_ratio': round(vol_ratio, 2),
+                'rsi': round(self._rsi(closes)[-1], 2),
+                'volume_ratio': round(
+                    volumes[-1] / self._sma(volumes, Config.VOLUME_PERIOD)[-1]
+                    if volumes[-1] > 0 else 0,
+                    2
+                ),
                 'time': int(datetime.utcnow().timestamp() * 1000)
             }
             

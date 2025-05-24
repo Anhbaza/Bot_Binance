@@ -45,25 +45,58 @@ class GUIManager:
             'avg_profit': 0.0
         }
         
+    def create_gui(self):
+        """Create GUI window and elements"""
+        # Create main window
+        self.root = tk.Tk()
+        self.root.title("Trading Bot Manager - By Anhbaza01")
+        self.root.geometry("1200x800")
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        # Setup style
+        self._setup_style()
+        
+        # Create menu
+        self._create_menu()
+        
+        # Create main container
+        container = ttk.Frame(self.root)
+        container.pack(fill=tk.BOTH, expand=True)
+        
+        # Create frames
+        top_frame = ttk.Frame(container)
+        top_frame.pack(fill=tk.BOTH, expand=True)
+        
+        bottom_frame = ttk.Frame(container)
+        bottom_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Create components
+        self._create_signal_frame(top_frame)
+        self._create_trade_frame(bottom_frame)
+        self._create_stats_frame()
+        self._create_status_bar()
+
+        # Start auto-update
+        self.running = True
+        self._update_gui()
+
+        return self.root
+
+    def on_closing(self):
+        """Handle window closing"""
+        if messagebox.askokcancel("Quit", "Do you want to quit?"):
+            self.stop()
+            self.root.destroy()
+
     def start(self):
-        """Start GUI in separate thread"""
-        try:
-            self.running = True
-            threading.Thread(
-                target=self._run_gui,
-                daemon=True
-            ).start()
-        except Exception as e:
-            print(f"Error starting GUI: {str(e)}")
-            
+        """Start GUI if not already created"""
+        if not self.root:
+            self.create_gui()
+        self.running = True
+
     def stop(self):
-        """Stop GUI"""
-        try:
-            self.running = False
-            if self.root:
-                self.root.quit()
-        except Exception as e:
-            print(f"Error stopping GUI: {str(e)}")
+        """Stop GUI updates"""
+        self.running = False
             
     def _setup_style(self):
         """Setup ttk styles"""

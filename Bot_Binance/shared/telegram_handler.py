@@ -9,33 +9,54 @@ import os
 import sys
 import logging
 import asyncio
+import aiohttp
 import telegram
 from typing import Optional
 from datetime import datetime
 
 class TelegramHandler:
-    def __init__(
-        self,
-        token: str,
-        chat_id: str,
-        logger: Optional[logging.Logger] = None
-    ):
-        self.token = token
-        self.chat_id = chat_id
-        self.logger = logger or logging.getLogger(__name__)
-        self.bot = telegram.Bot(token=token)
+    def __init__(self, token: str, chat_id: str = None):
+        self.token = token.strip()
+        self.chat_id = chat_id.strip() if chat_id else None
+        self.logger = logging.getLogger('TelegramHandler')
         
+        # Validate token
+        if not self.token or len(self.token) < 45:
+            self.logger.error("Invalid Telegram token format")
+            raise ValueError("Invalid Telegram token")
+            
+        # Log initialization
+        self.logger.info(
+            f"Initializing Telegram handler with token: {self.token[:8]}...{self.token[-4:]}"
+        )
+        if self.chat_id:
+            self.logger.info(f"Chat ID: {self.chat_id}")
+
     async def send_message(self, message: str) -> bool:
-        """Send message to Telegram"""
+        """Send message via Telegram"""
         try:
-            await self.bot.send_message(
-                chat_id=self.chat_id,
-                text=message,
-                parse_mode='HTML'
-            )
-            return True
+            if not self.token or not self.chat_id:
+                self.logger.error("Missing Telegram token or chat ID")
+                return False
+
+            url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json={
+                    'chat_id': self.chat_id,
+                    'text': message,
+                    'parse_mode': 'HTML'
+                }) as response:
+                    if response.status == 200:
+                        self.logger.info(f"Telegram message sent: {message[:50]}...")
+                        return True
+                    else:
+                        error_text = await response.text()
+                        self.logger.error(f"Telegram error: {error_text}")
+                        return False
+
         except Exception as e:
-            self.logger.error(f"Telegram error: {str(e)}")
+            self.logger.error(f"Error sending Telegram message: {str(e)}")
             return False
             
     async def send_signal(self, signal: dict) -> bool:

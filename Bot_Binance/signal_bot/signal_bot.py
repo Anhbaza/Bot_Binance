@@ -1,295 +1,353 @@
-"""
+﻿"""
 Signal Bot Implementation
 Author: Anhbaza01
 Version: 1.0.0
-Last Updated: 2025-05-24 09:14:56
+Last Updated: 2025-05-24 10:52:55 UTC
 """
 
 import os
 import sys
-import yaml
 import logging
 import asyncio
-from datetime import datetime
-from typing import Dict, Optional
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
 from binance.client import Client
+from binance.exceptions import BinanceAPIException
 
 # Add project root to path for imports
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 from signal_bot.signal_scanner import SignalScanner
-from signal_bot.signal_analyzer import SignalAnalyzer
-from shared.websocket_client import WebSocketClient
-from shared.constants import MessageType, ClientType
+from shared.constants import Config, SignalType, LogLevel
 
 class SignalBot:
     def __init__(self):
-        self.user = os.getenv('USER', 'Anhbaza01')
+        # Setup logging
         self.logger = self._setup_logging()
-        self._is_running = True
         
         # Components
         self.client = None
-        self.scanner = None
-        self.analyzer = None
-        self.ws_client = None
+        self.signal_scanner = None
+        self.telegram = None
         
-        # Load config
-        self.config = self._load_config()
+        # State
+        self._is_running = False
+        self.start_time = None
+        self.last_scan_time = {}
+        self.scan_stats = {
+            'total_scans': 0,
+            'total_signals': 0,
+            'pairs_analyzed': 0,
+            'cycles_completed': 0
+        }
 
     def _setup_logging(self) -> logging.Logger:
         """Setup logging configuration"""
         try:
             # Create logs directory
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            logs_dir = os.path.join(current_dir, '../logs')
+            logs_dir = os.path.join(PROJECT_ROOT, 'logs')
             os.makedirs(logs_dir, exist_ok=True)
-            
-            # Log filename with timestamp
-            log_filename = os.path.join(
+
+            # Log filename with date
+            log_file = os.path.join(
                 logs_dir,
                 f'signal_bot_{datetime.utcnow().strftime("%Y%m%d")}.log'
             )
-            
-            # Configure logging
-            logging.basicConfig(
-                level=logging.INFO,
-                format='%(asctime)s UTC | %(levelname)s | %(message)s',
-                handlers=[
-                    logging.FileHandler(log_filename),
-                    logging.StreamHandler(sys.stdout)
-                ],
-                datefmt='%Y-%m-%d %H:%M:%S'
+
+            # Configure logger
+            logger = logging.getLogger('SignalBot')
+            logger.setLevel(logging.INFO)
+
+            # File handler
+            fh = logging.FileHandler(log_file)
+            fh.setLevel(logging.INFO)
+
+            # Console handler
+            ch = logging.StreamHandler()
+            ch.setLevel(logging.INFO)
+
+            # Formatter
+            formatter = logging.Formatter(
+                '%(asctime)s UTC | %(levelname)s | %(message)s',
+                '%Y-%m-%d %H:%M:%S'
             )
-            
-            logger = logging.getLogger("SignalBot")
-            
-            # Log startup info
-            logger.info("="*50)
-            logger.info("Signal Bot - Logging Initialized")
-            logger.info(f"Log File: {log_filename}")
-            logger.info(f"Current Time (UTC): {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}")
-            logger.info(f"User: {self.user}")
-            logger.info("="*50)
-            
+            fh.setFormatter(formatter)
+            ch.setFormatter(formatter)
+
+            # Add handlers
+            logger.addHandler(fh)
+            logger.addHandler(ch)
+
             return logger
-            
+
         except Exception as e:
             print(f"Error setting up logging: {str(e)}")
-            logging.basicConfig(level=logging.INFO)
-            return logging.getLogger("SignalBot")
+            return logging.getLogger('SignalBot')
 
-    def _load_config(self) -> Dict:
-        """Load configuration from file"""
-        try:
-            config_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                '../config/config.yaml'
-            )
-            
-            with open(config_path, 'r') as f:
-                config = yaml.safe_load(f)
-                
-            self.logger.info("Configuration loaded successfully")
-            return config
-            
-        except Exception as e:
-            self.logger.error(f"Error loading config: {str(e)}")
-            return {}
-
-    async def setup_binance(self) -> bool:
-        """Setup Binance API client"""
-        try:
-            self.logger.info("Setting up Binance client...")
-            
-            # Get API credentials
-            api_key = self.config['binance'].get('api_key', '')
-            api_secret = self.config['binance'].get('api_secret', '')
-            testnet = self.config['binance'].get('testnet', True)
-            
-            # Initialize client
-            self.client = Client(
-                api_key,
-                api_secret,
-                testnet=testnet
-            )
-            
-            # Test connection
-            server_time = self.client.get_server_time()
-            if not server_time:
-                raise ConnectionError("Could not get server time")
-                
-            self.logger.info("Binance client setup successful")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Binance setup error: {str(e)}")
-            return False
-
-    async def setup_websocket(self) -> bool:
-        """Setup WebSocket client"""
-        try:
-            # Get WebSocket config
-            ws_config = self.config['websocket']
-            
-            # Initialize client
-            self.ws_client = WebSocketClient(
-                name="SignalBot",
-                host=ws_config['host'],
-                port=ws_config['port'],
-                logger=self.logger
-            )
-            
-            # Connect and register
-            if await self.ws_client.connect():
-                await self.ws_client.send_message({
-                    'type': MessageType.REGISTER.value,
-                    'client_type': ClientType.SIGNAL_BOT.value
-                })
-                
-                return True
-                
-            return False
-            
-        except Exception as e:
-            self.logger.error(f"WebSocket setup error: {str(e)}")
-            return False
-
-    async def send_signal(self, signal: Dict) -> bool:
-        """Send trading signal"""
-        try:
-            if not self.ws_client:
-                return False
-                
-            # Validate signal
-            if not self.analyzer.validate_signal(signal):
-                return False
-                
-            # Send via WebSocket
-            success = await self.ws_client.send_message({
-                'type': MessageType.SIGNAL.value,
-                'data': signal
-            })
-            
-            if success:
-                self.logger.info(
-                    f"Signal sent for {signal['symbol']}"
-                )
-                
-            return success
-            
-        except Exception as e:
-            self.logger.error(f"Error sending signal: {str(e)}")
-            return False
-
-    async def initialize(self) -> bool:
+    async def initialize(self, client: Client) -> bool:
         """Initialize Signal Bot"""
         try:
-            # Setup components
-            if not all([
-                await self.setup_binance(),
-                await self.setup_websocket()
-            ]):
-                return False
-                
-            # Initialize scanner & analyzer
-            self.scanner = SignalScanner(
-                self.client,
-                self.logger
-            )
-            self.analyzer = SignalAnalyzer(
-                self.logger
-            )
+            self.start_time = datetime.utcnow()
             
+            # Log startup
+            self.logger.info("\n" + "="*50)
+            self.logger.info("Signal Bot Initialization")
+            self.logger.info(f"Time: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+            self.logger.info(f"User: {os.getenv('USER', 'Anhbaza01')}")
+            self.logger.info("="*50 + "\n")
+
+            # Initialize components
+            self.client = client
+            self.signal_scanner = SignalScanner(client, self.logger)
+            self.signal_scanner.telegram = self.telegram
+
+            # Test API connection
+            try:
+                server_time = self.client.get_server_time()
+                if not server_time:
+                    raise ConnectionError("Could not get server time")
+                    
+                self.logger.info("✅ Binance API connection successful")
+            except Exception as e:
+                self.logger.error(f"❌ Binance API connection failed: {str(e)}")
+                return False
+
+            # Send initialization message
+            if self.telegram:
+                await self.telegram.send_message(
+                    "🤖 Signal Bot Initializing\n\n"
+                    f"Time: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+                    f"User: {os.getenv('USER', 'Anhbaza01')}\n\n"
+                    "Scanning Parameters:\n"
+                    f"- Min Volume: ${Config.MIN_VOLUME:,.0f}\n"
+                    f"- Min Confidence: {Config.MIN_CONFIDENCE}%\n"
+                    f"- Timeframes: {', '.join(Config.TIMEFRAMES)}"
+                )
+
             self.logger.info("Signal Bot initialized successfully")
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Initialization error: {str(e)}")
             return False
 
-    async def run(self):
-        """Run signal bot"""
-        try:
-            # Initialize
-            if not await self.initialize():
-                self.logger.error("Failed to initialize")
-                return
-                
-            self.logger.info("[+] Signal Bot started")
-            
-            # Start scanning
-            async for signal in self.scanner.start_scanning():
-                if not self._is_running:
-                    break
-                    
-                # Send valid signals
-                if signal:
-                    await self.send_signal(signal)
-                    
-        except KeyboardInterrupt:
-            self.logger.info("Signal Bot stopped by user")
-        except Exception as e:
-            self.logger.error(f"Fatal error: {str(e)}")
-        finally:
-            await self.stop()
-
-    async def stop(self):
-        """Stop signal bot"""
-        try:
-            self._is_running = False
-            
-            if self.scanner:
-                self.scanner.stop_scanning()
-                
-            if self.ws_client:
-                await self.ws_client.stop()
-                
-            self.logger.info("Signal Bot stopped")
-            
-        except Exception as e:
-            self.logger.error(f"Error stopping bot: {str(e)}")
-
-def main():
-    """Main function"""
-    try:
-        # Create Signal Bot
-        bot = SignalBot()
+    def _format_duration(self, seconds: float) -> str:
+        """Format duration in seconds to human readable string"""
+        duration = timedelta(seconds=int(seconds))
+        days = duration.days
+        hours = duration.seconds // 3600
+        minutes = (duration.seconds % 3600) // 60
+        seconds = duration.seconds % 60
         
-        # Set Windows event loop policy if needed
-        if os.name == 'nt':
-            asyncio.set_event_loop_policy(
-                asyncio.WindowsSelectorEventLoopPolicy()
+        parts = []
+        if days > 0:
+            parts.append(f"{days}d")
+        if hours > 0:
+            parts.append(f"{hours}h")
+        if minutes > 0:
+            parts.append(f"{minutes}m")
+        if seconds > 0 or not parts:
+            parts.append(f"{seconds}s")
+            
+        return " ".join(parts)
+
+    async def _log_stats(self):
+        """Log scanning statistics"""
+        try:
+            # Calculate runtime
+            runtime = (datetime.utcnow() - self.start_time).total_seconds()
+            
+            stats = (
+                f"\n{'='*50}\n"
+                f"Signal Bot Statistics\n\n"
+                f"Runtime: {self._format_duration(runtime)}\n"
+                f"Total Scans: {self.scan_stats['total_scans']}\n"
+                f"Total Signals: {self.scan_stats['total_signals']}\n"
+                f"Pairs Analyzed: {self.scan_stats['pairs_analyzed']}\n"
+                f"Cycles Completed: {self.scan_stats['cycles_completed']}\n"
+                f"{'='*50}\n"
             )
             
-        # Create event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        # Run bot
-        loop.run_until_complete(bot.run())
-        
-    except KeyboardInterrupt:
-        print("\nSignal Bot stopped by user")
-    except Exception as e:
-        print(f"\nFatal error: {str(e)}")
-    finally:
-        try:
-            loop = asyncio.get_event_loop()
+            self.logger.info(stats)
             
-            # Cancel pending tasks
-            tasks = [t for t in asyncio.all_tasks(loop) if not t.done()]
-            if tasks:
-                loop.run_until_complete(
-                    asyncio.gather(*tasks, return_exceptions=True)
+            if self.telegram:
+                await self.telegram.send_message(
+                    f"📊 Signal Bot Statistics\n\n"
+                    f"Runtime: {self._format_duration(runtime)}\n"
+                    f"Total Scans: {self.scan_stats['total_scans']:,}\n"
+                    f"Total Signals: {self.scan_stats['total_signals']:,}\n"
+                    f"Pairs Analyzed: {self.scan_stats['pairs_analyzed']:,}\n"
+                    f"Cycles Completed: {self.scan_stats['cycles_completed']:,}"
                 )
                 
-            # Close loop
-            loop.close()
-            
         except Exception as e:
-            print(f"\nError during shutdown: {str(e)}")
+            self.logger.error(f"Error logging stats: {str(e)}")
 
-if __name__ == "__main__":
-    main()
+    async def run(self):
+        """Run Signal Bot"""
+        try:
+            self._is_running = True
+            
+            self.logger.info("\n" + "="*50)
+            self.logger.info("Starting Market Scanner")
+            self.logger.info("="*50 + "\n")
+
+            # Load trading pairs
+            self.logger.info("Loading tradeable pairs...")
+            pairs = await self.signal_scanner._load_pairs()
+            
+            if not pairs:
+                self.logger.error("No valid pairs found to scan")
+                return
+
+            self.scan_stats['pairs_analyzed'] = len(pairs)
+            
+            self.logger.info(f"Found {len(pairs)} valid pairs to scan")
+            if self.telegram:
+                await self.telegram.send_message(
+                    f"🔍 Scanner initialized\n\n"
+                    f"Valid pairs found: {len(pairs)}\n"
+                    f"Starting detailed scan..."
+                )
+
+            # Start scanning cycles
+            while self._is_running:
+                try:
+                    cycle_start = datetime.utcnow()
+                    
+                    self.logger.info("\n" + "-"*50)
+                    self.logger.info(f"Starting scan cycle #{self.scan_stats['cycles_completed'] + 1}")
+                    self.logger.info(f"Time: {cycle_start.strftime('%H:%M:%S')} UTC")
+                    self.logger.info("-"*50 + "\n")
+
+                    # Scan each pair
+                    cycle_signals = 0
+                    
+                    for pair in pairs:
+                        if not self._is_running:
+                            break
+                            
+                        self.scan_stats['total_scans'] += 1
+                        
+                        # Log pair analysis start
+                        self.logger.info(f"\nAnalyzing {pair}...")
+                        
+                        # Check each timeframe
+                        for interval in Config.TIMEFRAMES:
+                            try:
+                                self.logger.info(f"\nTimeframe: {interval}")
+                                
+                                # Check if enough time passed since last scan
+                                last_scan = self.last_scan_time.get(
+                                    f"{pair}_{interval}",
+                                    0
+                                )
+                                
+                                now = int(datetime.utcnow().timestamp())
+                                
+                                # Convert interval to seconds
+                                if interval.endswith('m'):
+                                    interval_seconds = int(interval[:-1]) * 60
+                                elif interval.endswith('h'):
+                                    interval_seconds = int(interval[:-1]) * 3600
+                                else:
+                                    interval_seconds = 86400
+                                    
+                                # Skip if scanned recently
+                                if now - last_scan < interval_seconds:
+                                    self.logger.info(
+                                        f"Skipping {pair} {interval} - "
+                                        f"Last scan: {self._format_duration(now - last_scan)} ago"
+                                    )
+                                    continue
+                                
+                                # Get signal
+                                signal = await self.signal_scanner._scan_pair(
+                                    pair,
+                                    interval
+                                )
+                                
+                                # Update last scan time
+                                self.last_scan_time[f"{pair}_{interval}"] = now
+                                
+                                if signal:
+                                    self.scan_stats['total_signals'] += 1
+                                    cycle_signals += 1
+                                    
+                                    self.logger.info(
+                                        f"\n🎯 Signal #{self.scan_stats['total_signals']} found!"
+                                        f"\nPair: {pair}"
+                                        f"\nType: {signal['type']}"
+                                        f"\nEntry: ${signal['entry_price']:,.8f}"
+                                        f"\nConfidence: {signal['confidence']}%"
+                                    )
+                                
+                                # Small delay between timeframes
+                                await asyncio.sleep(0.1)
+                                
+                            except Exception as e:
+                                self.logger.error(
+                                    f"Error scanning {pair} on {interval}: {str(e)}"
+                                )
+                                continue
+                    
+                    # Log cycle completion
+                    cycle_end = datetime.utcnow()
+                    cycle_duration = (cycle_end - cycle_start).total_seconds()
+                    self.scan_stats['cycles_completed'] += 1
+                    
+                    self.logger.info("\n" + "="*50)
+                    self.logger.info("Scan Cycle Completed")
+                    self.logger.info(f"Time: {cycle_end.strftime('%H:%M:%S')} UTC")
+                    self.logger.info(f"Duration: {self._format_duration(cycle_duration)}")
+                    self.logger.info(f"Pairs Scanned: {len(pairs)}")
+                    self.logger.info(f"Signals Found: {cycle_signals}")
+                    self.logger.info("="*50 + "\n")
+                    
+                    # Send cycle summary
+                    if self.telegram:
+                        await self.telegram.send_message(
+                            f"📊 Scan Cycle #{self.scan_stats['cycles_completed']}\n\n"
+                            f"Time: {cycle_end.strftime('%H:%M:%S')} UTC\n"
+                            f"Duration: {self._format_duration(cycle_duration)}\n"
+                            f"Pairs Scanned: {len(pairs)}\n"
+                            f"Signals Found: {cycle_signals}\n\n"
+                            f"Total Scans: {self.scan_stats['total_scans']:,}\n"
+                            f"Total Signals: {self.scan_stats['total_signals']:,}"
+                        )
+                    
+                    # Log overall stats every 6 hours
+                    if self.scan_stats['cycles_completed'] % 360 == 0:  # ~1 minute per cycle
+                        await self._log_stats()
+                    
+                    # Delay between cycles
+                    await asyncio.sleep(60)  # 1 minute delay
+                    
+                except Exception as e:
+                    self.logger.error(f"Cycle error: {str(e)}")
+                    await asyncio.sleep(60)  # Wait before retrying
+                    continue
+
+        except Exception as e:
+            self.logger.error(f"Signal Bot error: {str(e)}")
+        finally:
+            self._is_running = False
+            await self._log_stats()
+            self.logger.info("Signal Bot stopped")
+
+    async def stop(self):
+        """Stop Signal Bot"""
+        self._is_running = False
+        self.logger.info("Stopping Signal Bot...")
+        
+        if self.telegram:
+            await self.telegram.send_message(
+                "🛑 Signal Bot Stopping\n\n"
+                "Final Statistics:\n"
+                f"Runtime: {self._format_duration((datetime.utcnow() - self.start_time).total_seconds())}\n"
+                f"Total Scans: {self.scan_stats['total_scans']:,}\n"
+                f"Total Signals: {self.scan_stats['total_signals']:,}\n"
+                f"Pairs Analyzed: {self.scan_stats['pairs_analyzed']:,}\n"
+                f"Cycles Completed: {self.scan_stats['cycles_completed']:,}"
+            )
