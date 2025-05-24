@@ -1,17 +1,23 @@
 """
-Signal Scanner for Trading Bot
-Scans trading pairs for potential signals
+Signal Scanner Implementation
 Author: Anhbaza01
 Version: 1.0.0
-Last Updated: 2025-05-24
+Last Updated: 2025-05-24 09:00:58 UTC
 """
 
+import os
+import sys
 import logging
-import asyncio
 from typing import Dict, List, Optional
 from binance.client import Client
-from binance.exceptions import BinanceAPIException
-from ..shared.constants import TradingConfig
+from datetime import datetime, timedelta
+
+# Add project root to path for imports
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
+
+from shared.constants import TradingConfig as Config
+from signal_bot.signal_analyzer import SignalAnalyzer
 
 class SignalScanner:
     def __init__(
@@ -21,181 +27,254 @@ class SignalScanner:
     ):
         self.client = client
         self.logger = logger or logging.getLogger(__name__)
+        self.analyzer = SignalAnalyzer()
+        self.scanning = False
         
-        # Monitored pairs
-        self.valid_pairs = []
-        self.watched_pairs = []
+        # Load trading pairs
+        self.pairs = self._load_pairs()
         
-        # Last scan time
-        self.last_scan = {}
-        
-    async def get_valid_pairs(self) -> List[str]:
-        """Get list of valid trading pairs"""
+    def _load_pairs(self) -> List[str]:
+        """Load tradeable pairs"""
         try:
-            # Get exchange info
-            info = self.client.get_exchange_info()
+            pairs = []
+            exchange_info = self.client.get_exchange_info()
             
-            # Get 24h stats for volume filtering
-            tickers = self.client.get_ticker()
-            volume_dict = {
-                t['symbol']: float(t['quoteVolume'])
-                for t in tickers
-            }
-            
-            # Filter valid pairs
-            valid_pairs = []
-            for symbol in info['symbols']:
-                if (
-                    # Trading status
-                    symbol['status'] == 'TRADING' and
-                    # USDT pairs only
-                    symbol['quoteAsset'] == 'USDT' and
-                    # Check volume
-                    symbol['symbol'] in volume_dict and
-                    volume_dict[symbol['symbol']] >= TradingConfig.MIN_VOLUME_USDT
-                ):
-                    valid_pairs.append(symbol['symbol'])
+            for symbol in exchange_info['symbols']:
+                # Only USDT pairs
+                if not symbol['symbol'].endswith('USDT'):
+                    continue
                     
-            # Sort by volume
-            valid_pairs.sort(
-                key=lambda x: volume_dict[x],
-                reverse=True
-            )
-            
-            # Log stats
-            self.logger.info(f"Found {len(valid_pairs)} valid pairs")
-            self.logger.info("Top 5 pairs by volume:")
-            for pair in valid_pairs[:5]:
-                volume = volume_dict[pair]
-                self.logger.info(f"  {pair}: ${volume:,.2f}")
+                # Must be active and spot trading
+                if (symbol['status'] != 'TRADING' or
+                    symbol['isSpotTradingAllowed'] is False):
+                    continue
+                    
+                # Check minimum volume
+                ticker = self.client.get_ticker(symbol=symbol['symbol'])
+                volume = float(ticker['quoteVolume'])
+                if volume < Config.MIN_VOLUME:
+                    continue
+                    
+                pairs.append(symbol['symbol'])
                 
-            return valid_pairs
+            self.logger.info(f"Loaded {len(pairs)} trading pairs")
+            return pairs
             
         except Exception as e:
-            self.logger.error(f"Error getting valid pairs: {str(e)}")
+            self.logger.error(f"Error loading pairs: {str(e)}")
             return []
-            
-    async def get_klines(
+
+    async def scan_pair(
         self,
         symbol: str,
-        interval: str = '15m',
-        limit: int = 100
-    ) -> Optional[List[Dict]]:
-        """Get kline data for a symbol"""
+        interval: str = '1h'
+    ) -> Optional[Dict]:
+        """Scan single pair for signals"""
         try:
-            # Get klines from Binance
+            # Get klines data
             klines = self.client.get_klines(
                 symbol=symbol,
                 interval=interval,
-                limit=limit
+                limit=100
             )
             
-            # Format klines
-            formatted = []
-            for k in klines:
-                formatted.append({
-                    'time': k[0],
-                    'open': float(k[1]),
-                    'high': float(k[2]),
-                    'low': float(k[3]),
-                    'close': float(k[4]),
-                    'volume': float(k[5]),
-                    'close_time': k[6],
-                    'quote_volume': float(k[7])
-                })
-                
-            return formatted
-            
-        except BinanceAPIException as e:
-            self.logger.error(f"Binance API error for {symbol}: {str(e)}")
-            return None
-        except Exception as e:
-            self.logger.error(f"Error getting klines for {symbol}: {str(e)}")
-            return None
-            
-    async def get_ticker(self, symbol: str) -> Optional[Dict]:
-        """Get current ticker data"""
-        try:
-            ticker = self.client.get_symbol_ticker(symbol=symbol)
-            return {
-                'symbol': ticker['symbol'],
-                'price': float(ticker['price'])
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Error getting ticker for {symbol}: {str(e)}")
-            return None
-            
-    async def scan_pair(self, symbol: str) -> Optional[Dict]:
-        """Scan single pair for signals"""
-        try:
-            # Get kline data
-            klines = await self.get_klines(symbol)
             if not klines:
                 return None
                 
-            # Get current price
-            ticker = await self.get_ticker(symbol)
-            if not ticker:
-                return None
+            # Analyze for signals
+            signal = self.analyzer.analyze_klines(
+                symbol,
+                klines
+            )
+            
+            if signal:
+                self.logger.info(
+                    f"Found signal for {symbol}: {signal['type']}"
+                )
                 
+            return signal
+            
+        except Exception as e:
+            self.logger.error(
+                f"Error scanning {symbol}: {str(e)}"
+            )
+            return None
+
+    async def start_scanning(self):
+        """Start scanning process"""
+        try:
+            self.scanning = True
+            self.logger.info("Starting scanner...")
+            
+            while self.scanning:
+                for symbol in self.pairs:
+                    if not self.scanning:
+                        break
+                        
+                    # Scan each timeframe
+                    for interval in Config.TIMEFRAMES:
+                        signal = await self.scan_pair(
+                            symbol,
+                            interval
+                        )
+                        
+                        if signal:
+                            yield signal
+                            
+                    # Rate limiting
+                    await asyncio.sleep(1)
+                    
+        except Exception as e:
+            self.logger.error(f"Scanner error: {str(e)}")
+        finally:
+            self.scanning = False
+
+    def stop_scanning(self):
+        """Stop scanning process"""
+        self.scanning = False
+        self.logger.info("Scanner stopped")
+
+    def get_valid_pairs(self) -> List[str]:
+        """Get list of valid trading pairs"""
+        return self.pairs.copy()
+
+    async def get_pair_info(self, symbol: str) -> Optional[Dict]:
+        """Get detailed pair information"""
+        try:
+            # Get current ticker
+            ticker = self.client.get_ticker(symbol=symbol)
+            
+            # Get 24h stats
+            stats = self.client.get_ticker(symbol=symbol)
+            
+            # Get order book
+            depth = self.client.get_order_book(
+                symbol=symbol,
+                limit=5
+            )
+            
             return {
                 'symbol': symbol,
-                'klines': klines,
-                'current_price': ticker['price'],
-                'time': klines[-1]['time']
+                'price': float(ticker['lastPrice']),
+                'volume': float(stats['volume']),
+                'change': float(stats['priceChangePercent']),
+                'high': float(stats['highPrice']),
+                'low': float(stats['lowPrice']),
+                'bid': float(depth['bids'][0][0]),
+                'ask': float(depth['asks'][0][0]),
+                'spread': (
+                    float(depth['asks'][0][0]) -
+                    float(depth['bids'][0][0])
+                ),
+                'updated': datetime.utcnow().isoformat()
             }
             
         except Exception as e:
-            self.logger.error(f"Error scanning {symbol}: {str(e)}")
+            self.logger.error(
+                f"Error getting info for {symbol}: {str(e)}"
+            )
             return None
-            
-    async def scan_pairs(
+
+    async def calculate_volatility(
         self,
-        pairs: Optional[List[str]] = None
-    ) -> List[Dict]:
-        """Scan multiple pairs"""
+        symbol: str,
+        period: int = 14
+    ) -> Optional[float]:
+        """Calculate pair volatility"""
         try:
-            # Use provided pairs or all valid pairs
-            pairs_to_scan = pairs or self.valid_pairs
-            
-            self.logger.info(f"Scanning {len(pairs_to_scan)} pairs...")
-            
-            # Create scan tasks
-            tasks = []
-            for symbol in pairs_to_scan:
-                tasks.append(asyncio.create_task(
-                    self.scan_pair(symbol)
-                ))
-                
-            # Wait for all scans
-            results = await asyncio.gather(*tasks)
-            
-            # Filter valid results
-            valid_results = [r for r in results if r is not None]
-            
-            self.logger.info(
-                f"Scan completed - {len(valid_results)} valid results"
+            # Get daily klines
+            klines = self.client.get_klines(
+                symbol=symbol,
+                interval='1d',
+                limit=period
             )
             
-            return valid_results
-            
-        except Exception as e:
-            self.logger.error(f"Error scanning pairs: {str(e)}")
-            return []
-            
-    async def initialize(self) -> bool:
-        """Initialize scanner"""
-        try:
-            # Get valid pairs
-            self.valid_pairs = await self.get_valid_pairs()
-            if not self.valid_pairs:
-                self.logger.error("No valid pairs found")
-                return False
+            if not klines:
+                return None
                 
-            self.logger.info("Signal Scanner initialized successfully")
-            return True
+            # Calculate daily returns
+            closes = [float(k[4]) for k in klines]
+            returns = [
+                (closes[i] - closes[i-1]) / closes[i-1]
+                for i in range(1, len(closes))
+            ]
+            
+            # Calculate standard deviation
+            import numpy as np
+            volatility = np.std(returns) * 100
+            
+            return round(volatility, 2)
             
         except Exception as e:
-            self.logger.error(f"Scanner initialization error: {str(e)}")
-            return False
+            self.logger.error(
+                f"Error calculating volatility for {symbol}: {str(e)}"
+            )
+            return None
+
+    def filter_pairs(
+        self,
+        min_volume: float = None,
+        min_price: float = None,
+        max_spread: float = None
+    ) -> List[str]:
+        """Filter pairs by criteria"""
+        try:
+            filtered = []
+            
+            for symbol in self.pairs:
+                try:
+                    ticker = self.client.get_ticker(symbol=symbol)
+                    
+                    # Check volume
+                    if min_volume:
+                        volume = float(ticker['quoteVolume'])
+                        if volume < min_volume:
+                            continue
+                            
+                    # Check price
+                    if min_price:
+                        price = float(ticker['lastPrice'])
+                        if price < min_price:
+                            continue
+                            
+                    # Check spread
+                    if max_spread:
+                        book = self.client.get_order_book(
+                            symbol=symbol,
+                            limit=1
+                        )
+                        spread = (
+                            float(book['asks'][0][0]) -
+                            float(book['bids'][0][0])
+                        )
+                        if spread > max_spread:
+                            continue
+                            
+                    filtered.append(symbol)
+                    
+                except:
+                    continue
+                    
+            return filtered
+            
+        except Exception as e:
+            self.logger.error(f"Error filtering pairs: {str(e)}")
+            return []
+
+    def update_pairs(self):
+        """Update trading pairs list"""
+        try:
+            new_pairs = self._load_pairs()
+            
+            added = set(new_pairs) - set(self.pairs)
+            removed = set(self.pairs) - set(new_pairs)
+            
+            self.pairs = new_pairs
+            
+            if added:
+                self.logger.info(f"Added pairs: {added}")
+            if removed:
+                self.logger.info(f"Removed pairs: {removed}")
+                
+        except Exception as e:
+            self.logger.error(f"Error updating pairs: {str(e)}")

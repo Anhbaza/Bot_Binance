@@ -3,15 +3,21 @@ Order Manager for Trading Bot
 Handles order creation and management with Binance
 Author: Anhbaza01
 Version: 1.0.0
-Last Updated: 2025-05-24 08:38:13 UTC
+Last Updated: 2025-05-24 09:16:42 UTC
 """
 
-import asyncio
+import os
+import sys
 import logging
 from typing import Dict, List, Optional
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
-from ..shared.constants import TradingConfig as Config
+
+# Add project root to path for imports
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
+
+from shared.constants import TradingConfig as Config
 
 class OrderManager:
     def __init__(

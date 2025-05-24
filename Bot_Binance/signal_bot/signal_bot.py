@@ -1,30 +1,27 @@
 """
-Signal Bot for Trading
-Main signal bot implementation
+Signal Bot Implementation
 Author: Anhbaza01
 Version: 1.0.0
-Last Updated: 2025-05-24 08:15:05 UTC
+Last Updated: 2025-05-24 09:14:56
 """
 
 import os
 import sys
 import yaml
-import asyncio
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+import asyncio
+from datetime import datetime
+from typing import Dict, Optional
 from binance.client import Client
-from binance.exceptions import BinanceAPIException
 
-from .signal_scanner import SignalScanner
-from .signal_analyzer import SignalAnalyzer
-from ..shared.websocket_client import WebSocketClient
-from ..shared.constants import (
-    SignalType,
-    MessageType,
-    ClientType,
-    TradingConfig as Config
-)
+# Add project root to path for imports
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
+
+from signal_bot.signal_scanner import SignalScanner
+from signal_bot.signal_analyzer import SignalAnalyzer
+from shared.websocket_client import WebSocketClient
+from shared.constants import MessageType, ClientType
 
 class SignalBot:
     def __init__(self):
@@ -33,15 +30,10 @@ class SignalBot:
         self._is_running = True
         
         # Components
-        self.client = None  # Binance client
-        self.scanner = None  # Signal scanner
-        self.analyzer = None  # Signal analyzer
-        self.ws_client = None  # WebSocket client
-        
-        # State
-        self.active_signals = {}
-        self.last_scan_time = None
-        self.scan_interval = 300  # 5 minutes
+        self.client = None
+        self.scanner = None
+        self.analyzer = None
+        self.ws_client = None
         
         # Load config
         self.config = self._load_config()
@@ -111,7 +103,7 @@ class SignalBot:
         try:
             self.logger.info("Setting up Binance client...")
             
-            # Get API credentials from config
+            # Get API credentials
             api_key = self.config['binance'].get('api_key', '')
             api_secret = self.config['binance'].get('api_secret', '')
             testnet = self.config['binance'].get('testnet', True)
@@ -156,13 +148,6 @@ class SignalBot:
                     'client_type': ClientType.SIGNAL_BOT.value
                 })
                 
-                # Register message handlers
-                self.ws_client.register_handler(
-                    MessageType.WATCH_PAIRS.value,
-                    self.handle_watch_pairs
-                )
-                
-                asyncio.create_task(self.ws_client.listen())
                 return True
                 
             return False
@@ -171,108 +156,52 @@ class SignalBot:
             self.logger.error(f"WebSocket setup error: {str(e)}")
             return False
 
-    async def handle_watch_pairs(self, data: Dict):
-        """Handle watched pairs update"""
-        try:
-            pairs = data.get('pairs', [])
-            if self.scanner:
-                self.scanner.watched_pairs = pairs
-                
-            self.logger.info(
-                f"Updated watched pairs: "
-                f"Monitoring {len(pairs)} pairs"
-            )
-            
-            if pairs:
-                self.logger.info(f"Pairs: {', '.join(pairs)}")
-                
-        except Exception as e:
-            self.logger.error(f"Error handling watch pairs: {str(e)}")
-
     async def send_signal(self, signal: Dict) -> bool:
-        """Send trading signal to Trade Manager"""
+        """Send trading signal"""
         try:
-            if not self.ws_client or not self.ws_client.is_connected():
-                self.logger.error("WebSocket not connected")
+            if not self.ws_client:
                 return False
                 
-            # Add timestamp and format
-            formatted_signal = {
+            # Validate signal
+            if not self.analyzer.validate_signal(signal):
+                return False
+                
+            # Send via WebSocket
+            success = await self.ws_client.send_message({
                 'type': MessageType.SIGNAL.value,
-                'data': {
-                    **signal,
-                    'timestamp': datetime.utcnow().isoformat()
-                }
-            }
+                'data': signal
+            })
             
-            # Send signal
-            await self.ws_client.send_message(formatted_signal)
-            
-            # Store in active signals
-            signal_id = f"{signal['symbol']}_{signal['timestamp']}"
-            self.active_signals[signal_id] = signal
-            
-            self.logger.info(
-                f"Signal sent: {signal['symbol']} "
-                f"{signal['type']} @ {signal['entry']}"
-            )
-            return True
+            if success:
+                self.logger.info(
+                    f"Signal sent for {signal['symbol']}"
+                )
+                
+            return success
             
         except Exception as e:
             self.logger.error(f"Error sending signal: {str(e)}")
             return False
 
-    async def scan_markets(self):
-        """Scan markets for trading signals"""
-        try:
-            self.logger.info("Starting market scan...")
-            self.last_scan_time = datetime.utcnow()
-            
-            # Get scan results
-            results = await self.scanner.scan_pairs()
-            
-            signals_found = 0
-            for result in results:
-                # Analyze each pair
-                signal = self.analyzer.analyze_pair(
-                    result['symbol'],
-                    result['klines']
-                )
-                
-                if signal:
-                    # Send valid signals
-                    if await self.send_signal(signal):
-                        signals_found += 1
-                        
-            self.logger.info(
-                f"Scan completed - Found {signals_found} signals"
-            )
-            
-        except Exception as e:
-            self.logger.error(f"Error scanning markets: {str(e)}")
-
     async def initialize(self) -> bool:
         """Initialize Signal Bot"""
         try:
-            # Setup Binance client
-            if not await self.setup_binance():
+            # Setup components
+            if not all([
+                await self.setup_binance(),
+                await self.setup_websocket()
+            ]):
                 return False
                 
-            # Setup WebSocket
-            if not await self.setup_websocket():
-                return False
-                
-            # Initialize components
+            # Initialize scanner & analyzer
             self.scanner = SignalScanner(
                 self.client,
                 self.logger
             )
-            self.analyzer = SignalAnalyzer(self.logger)
+            self.analyzer = SignalAnalyzer(
+                self.logger
+            )
             
-            # Initialize scanner
-            if not await self.scanner.initialize():
-                return False
-                
             self.logger.info("Signal Bot initialized successfully")
             return True
             
@@ -281,51 +210,51 @@ class SignalBot:
             return False
 
     async def run(self):
-        """Main bot loop"""
+        """Run signal bot"""
         try:
             # Initialize
             if not await self.initialize():
-                self.logger.error("Failed to initialize. Check logs.")
+                self.logger.error("Failed to initialize")
                 return
                 
             self.logger.info("[+] Signal Bot started")
-            self.logger.info(f"[*] Monitoring {len(self.scanner.valid_pairs)} pairs")
             
-            # Main loop
-            while self._is_running:
-                try:
-                    # Calculate next scan time
-                    now = datetime.utcnow()
-                    if (
-                        not self.last_scan_time or
-                        (now - self.last_scan_time).total_seconds() >= self.scan_interval
-                    ):
-                        await self.scan_markets()
-                        
-                    # Wait for next iteration
-                    await asyncio.sleep(1)
+            # Start scanning
+            async for signal in self.scanner.start_scanning():
+                if not self._is_running:
+                    break
                     
-                except Exception as e:
-                    self.logger.error(f"Error in main loop: {str(e)}")
-                    await asyncio.sleep(5)
+                # Send valid signals
+                if signal:
+                    await self.send_signal(signal)
                     
         except KeyboardInterrupt:
             self.logger.info("Signal Bot stopped by user")
         except Exception as e:
             self.logger.error(f"Fatal error: {str(e)}")
         finally:
-            # Cleanup
+            await self.stop()
+
+    async def stop(self):
+        """Stop signal bot"""
+        try:
             self._is_running = False
             
+            if self.scanner:
+                self.scanner.stop_scanning()
+                
             if self.ws_client:
                 await self.ws_client.stop()
                 
             self.logger.info("Signal Bot stopped")
+            
+        except Exception as e:
+            self.logger.error(f"Error stopping bot: {str(e)}")
 
 def main():
     """Main function"""
     try:
-        # Create Signal Bot instance
+        # Create Signal Bot
         bot = SignalBot()
         
         # Set Windows event loop policy if needed
@@ -333,8 +262,8 @@ def main():
             asyncio.set_event_loop_policy(
                 asyncio.WindowsSelectorEventLoopPolicy()
             )
-        
-        # Create and set event loop
+            
+        # Create event loop
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
