@@ -1,41 +1,150 @@
 """
-Binance Trading Bot
-Handles trading operations and management of the entire bot system.
+Binance Trading Bot Simulation
+A cryptocurrency trading bot simulation that doesn't require real Binance API credentials.
+
+Features:
+- Mock trading with virtual balance
+- Real-time price simulation
+- Multiple trading strategies
+- Risk management
+- Performance tracking
+- GUI monitoring interface
 
 Author: Anhbaza01
 Version: 1.0.0
-Last Updated: 2025-05-24 12:35:10 UTC
+Last Updated: 2025-05-24 13:07:17 UTC
 """
-
 import os
 import sys
+# Thêm thư mục cha vào PYTHONPATH
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
 import asyncio
 import logging
 import yaml
+import random
 from datetime import datetime, timedelta
-from typing import Dict, Optional
-from binance.client import Client
+from typing import Dict, Optional, List
+from decimal import Decimal, ROUND_DOWN
+from trade_manager import TradeManager, GUIManager 
 from signal_bot.signal_bot import SignalBot
-from trade_manager.trade_manager import TradeManager
-from shared.telegram_handler import TelegramHandler
-from trade_manager.gui_manager import GUIManager
-from shared.websocket_server import WebSocketServer
+
+
+class MockMarketData:
+    """Simulates market data without real API"""
+    
+    def __init__(self):
+        self.base_prices = {
+            'BTCUSDT': 45000.0,
+            'ETHUSDT': 3000.0,
+            'BNBUSDT': 350.0,
+            'ADAUSDT': 1.2,
+            'DOGEUSDT': 0.15,
+        }
+        self.last_update = datetime.utcnow()
+        
+    def get_current_price(self, symbol: str) -> float:
+        """Simulate real-time price movement"""
+        base = self.base_prices.get(symbol, 100.0)
+        volatility = base * 0.002  # 0.2% volatility
+        change = random.uniform(-volatility, volatility)
+        return round(base + change, 8)
+        
+    def get_all_prices(self) -> Dict[str, float]:
+        """Get all simulated prices"""
+        return {
+            symbol: self.get_current_price(symbol)
+            for symbol in self.base_prices
+        }
+
+class MockBinanceClient:
+    """Mock Binance client for simulation"""
+    
+    def __init__(self):
+        self.market_data = MockMarketData()
+        self.balances = {
+            'USDT': 10000.0,  # Initial balance
+            'BTC': 0.0,
+            'ETH': 0.0,
+            'BNB': 0.0,
+            'ADA': 0.0,
+            'DOGE': 0.0
+        }
+        
+    def get_server_time(self) -> Dict:
+        """Mock server time"""
+        return {'serverTime': int(datetime.utcnow().timestamp() * 1000)}
+        
+    def get_account(self) -> Dict:
+        """Mock account information"""
+        return {
+            'makerCommission': 10,
+            'takerCommission': 10,
+            'buyerCommission': 0,
+            'sellerCommission': 0,
+            'canTrade': True,
+            'canWithdraw': True,
+            'canDeposit': True,
+            'updateTime': int(datetime.utcnow().timestamp() * 1000),
+            'balances': [
+                {'asset': k, 'free': str(v), 'locked': '0.0'}
+                for k, v in self.balances.items()
+            ]
+        }
+        
+    def get_symbol_info(self, symbol: str) -> Dict:
+        """Mock symbol information"""
+        return {
+            'symbol': symbol,
+            'status': 'TRADING',
+            'baseAsset': symbol.replace('USDT', ''),
+            'quoteAsset': 'USDT',
+            'filters': [
+                {
+                    'filterType': 'PRICE_FILTER',
+                    'minPrice': '0.00000100',
+                    'maxPrice': '1000000.00000000',
+                    'tickSize': '0.00000100'
+                },
+                {
+                    'filterType': 'LOT_SIZE',
+                    'minQty': '0.00000100',
+                    'maxQty': '9000000.00000000',
+                    'stepSize': '0.00000100'
+                }
+            ]
+        }
+        
+    def get_price(self, symbol: str) -> float:
+        """Get simulated price for symbol"""
+        return self.market_data.get_current_price(symbol)
+        
+    def get_all_prices(self) -> List[Dict]:
+        """Get all simulated prices"""
+        prices = self.market_data.get_all_prices()
+        return [
+            {'symbol': symbol, 'price': str(price)}
+            for symbol, price in prices.items()
+        ]
 
 class BotManager:
-    """Manages all components of the trading bot system"""
+    """Main bot manager class"""
     
     def __init__(self):
         """Initialize Bot Manager"""
         self.config: Dict = {}
         self.logger = self._setup_logging()
-        self.client: Optional[Client] = None
-        self.telegram: Optional[TelegramHandler] = None
-        self.signal_bot: Optional[SignalBot] = None
-        self.trade_manager: Optional[TradeManager] = None
-        self.ws_server: Optional[WebSocketServer] = None
-        self.gui_manager: Optional[GUIManager] = None
-        self._is_running: bool = False
-        self.start_time: datetime = datetime.utcnow()
+        self.client = MockBinanceClient()
+        self.telegram = None
+        self.signal_bot = None
+        self.trade_manager = None
+        self.gui_manager = None
+        self._is_running = False
+        self.start_time = datetime.utcnow()
+        self.market_data = MockMarketData()
+        self.last_price_update = datetime.utcnow()
+        self.price_update_interval = 1.0  # seconds
 
     def _setup_logging(self) -> logging.Logger:
         """Setup logging configuration"""
@@ -57,7 +166,7 @@ class BotManager:
             logger = logging.getLogger('BotManager')
             logger.setLevel(logging.INFO)
 
-            # File handler
+            # File handler with UTF-8 encoding
             fh = logging.FileHandler(log_file, encoding='utf-8')
             fh.setLevel(logging.INFO)
 
@@ -101,10 +210,10 @@ class BotManager:
             with open(config_path, 'r', encoding='utf-8') as f:
                 self.config = yaml.safe_load(f)
 
-            # Validate required config fields
+            # Validate configuration
             required_fields = [
-                'api_key', 'api_secret', 'telegram_token', 
-                'telegram_chat_id', 'min_volume', 'min_confidence'
+                'min_volume', 'min_confidence', 'timeframes',
+                'order_size', 'max_orders', 'risk_per_trade'
             ]
             
             for field in required_fields:
@@ -112,22 +221,35 @@ class BotManager:
                     self.logger.error(f"Missing required config field: {field}")
                     return False
 
-            # Log config (excluding sensitive data)
+            # Log configuration
             self.logger.info("Configuration loaded:")
-            self.logger.info(f"- Telegram Bot: Configured")
-            self.logger.info(f"- Telegram Chat ID: {self.config['telegram_chat_id']}")
-            self.logger.info(f"- Min Volume: ${self.config.get('min_volume', 1000000):,}")
-            self.logger.info(f"- Min Confidence: {self.config.get('min_confidence', 70)}%")
-            self.logger.info(f"- Timeframes: {', '.join(self.config.get('timeframes', ['1m','5m','15m','1h','4h']))}")
-            self.logger.info(f"- Order Size: ${self.config.get('order_size', 100):,}")
-            self.logger.info(f"- Max Orders: {self.config.get('max_orders', 10)}")
-            self.logger.info(f"- Risk Per Trade: {self.config.get('risk_per_trade', 1)}%")
+            self.logger.info(f"- Min Volume: ${self.config['min_volume']:,}")
+            self.logger.info(f"- Min Confidence: {self.config['min_confidence']}%")
+            self.logger.info(f"- Timeframes: {', '.join(self.config['timeframes'])}")
+            self.logger.info(f"- Order Size: ${self.config['order_size']:,}")
+            self.logger.info(f"- Max Orders: {self.config['max_orders']}")
+            self.logger.info(f"- Risk Per Trade: {self.config['risk_per_trade']}%")
 
             return True
 
         except Exception as e:
             self.logger.error(f"Error loading config: {str(e)}")
             return False
+
+    async def _update_market_data(self):
+        """Update simulated market data periodically"""
+        while self._is_running:
+            try:
+                now = datetime.utcnow()
+                if (now - self.last_price_update).total_seconds() >= self.price_update_interval:
+                    prices = self.market_data.get_all_prices()
+                    if self.trade_manager:
+                        await self.trade_manager.update_prices(prices)
+                    self.last_price_update = now
+                await asyncio.sleep(0.1)  # Small delay to prevent CPU overload
+            except Exception as e:
+                self.logger.error(f"Error updating market data: {str(e)}")
+                await asyncio.sleep(1)
 
     async def initialize(self) -> bool:
         """Initialize all bot components"""
@@ -138,92 +260,52 @@ class BotManager:
             if not self._load_config():
                 return False
 
-            # Initialize Binance client
+            # Test mock connection
             try:
-                self.client = Client(
-                    self.config['api_key'],
-                    self.config['api_secret'],
-                    testnet=self.config.get('test_mode', True)
-                )
-                # Test connection
                 server_time = self.client.get_server_time()
                 self.logger.info(
-                    "Connected to Binance API "
+                    f"Connected to Mock Binance API "
                     f"(Server Time: {datetime.fromtimestamp(server_time['serverTime']/1000)})"
                 )
             except Exception as e:
-                self.logger.error(f"Failed to connect to Binance: {str(e)}")
+                self.logger.error(f"Failed to connect to Mock API: {str(e)}")
                 return False
 
-            # Initialize Telegram
+            # Initialize components
             try:
-                self.telegram = TelegramHandler(
-                    self.config['telegram_token'],
-                    self.config['telegram_chat_id']
-                )
-                
-                # Send startup message
-                if not await self.telegram.send_message(
-                    "Bot Manager Starting\n\n"
-                    f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-                    f"User: {os.getenv('USER', 'Anhbaza01')}\n"
-                    f"Mode: {'Test Mode' if self.config.get('test_mode', True) else 'Production'}"
-                ):
-                    self.logger.error("Failed to send Telegram message")
-                    return False
-                    
-            except Exception as e:
-                self.logger.error(f"Failed to initialize Telegram: {str(e)}")
-                return False
+                # Import required modules
+                from signal_bot.signal_bot import SignalBot
+                from trade_manager.trade_manager import TradeManager
+                from gui.gui_manager import GUIManager
 
-            # Initialize SignalBot
-            try:
+                # Initialize SignalBot
                 self.signal_bot = SignalBot()
-                self.signal_bot.telegram = self.telegram
                 if not await self.signal_bot.initialize(self.client):
                     self.logger.error("Failed to initialize SignalBot")
                     return False
-            except Exception as e:
-                self.logger.error(f"Error initializing SignalBot: {str(e)}")
-                return False
+                self.logger.info("Signal Bot initialized successfully")
 
-            # Initialize TradeManager
-            try:
+                # Initialize TradeManager
                 self.trade_manager = TradeManager(self.client)
-                self.trade_manager.telegram = self.telegram
                 if not await self.trade_manager.initialize():
                     self.logger.error("Failed to initialize TradeManager")
                     return False
-            except Exception as e:
-                self.logger.error(f"Error initializing TradeManager: {str(e)}")
-                return False
+                self.logger.info("Trade Manager initialized successfully")
 
-            # Initialize GUI if enabled
-            if self.config.get('gui_enabled', True):
-                try:
+                # Initialize GUI if enabled
+                if self.config.get('gui_enabled', True):
                     self.gui_manager = GUIManager(self.trade_manager)
                     self.gui_manager.start()
                     self.logger.info("GUI started successfully")
-                except Exception as e:
-                    self.logger.error(f"Failed to start GUI: {str(e)}")
-                    return False
 
-            # Initialize WebSocket server if enabled
-            if self.config.get('ws_enabled', True):
-                try:
-                    self.ws_server = WebSocketServer(
-                        self.signal_bot,
-                        self.trade_manager,
-                        self.config.get('ws_host', 'localhost'),
-                        self.config.get('ws_port', 8765)
-                    )
-                    await self.ws_server.start()
-                    self.logger.info("WebSocket server started successfully")
-                except Exception as e:
-                    self.logger.error(f"Failed to start WebSocket server: {str(e)}")
-                    return False
+                return True
 
-            return True
+            except ImportError as e:
+                self.logger.error(f"Failed to import required modules: {str(e)}")
+                return False
+            except Exception as e:
+                self.logger.error(f"Error initializing components: {str(e)}")
+                return False
 
         except Exception as e:
             self.logger.error(f"Initialization error: {str(e)}")
@@ -232,7 +314,6 @@ class BotManager:
     async def run(self):
         """Run the bot manager"""
         try:
-            # Initialize components
             if not await self.initialize():
                 self.logger.error("Failed to initialize")
                 return
@@ -240,10 +321,13 @@ class BotManager:
             self._is_running = True
             self.logger.info("Bot Manager started successfully")
 
+            # Start market data updates
+            market_update_task = asyncio.create_task(self._update_market_data())
+
             # Main loop
             while self._is_running:
                 try:
-                    # Update GUI if enabled
+                    # Update GUI status
                     if self.gui_manager:
                         runtime = datetime.utcnow() - self.start_time
                         self.gui_manager.update_status(
@@ -251,7 +335,6 @@ class BotManager:
                             str(runtime).split('.')[0]
                         )
 
-                    # Wait before next update
                     await asyncio.sleep(1)
 
                 except Exception as e:
@@ -261,6 +344,13 @@ class BotManager:
         except Exception as e:
             self.logger.error(f"Fatal error: {str(e)}")
         finally:
+            # Clean up
+            self._is_running = False
+            try:
+                market_update_task.cancel()
+                await market_update_task
+            except:
+                pass
             await self.stop()
 
     async def stop(self):
@@ -269,10 +359,6 @@ class BotManager:
             self._is_running = False
             
             # Stop components in reverse order
-            if self.ws_server:
-                await self.ws_server.stop()
-                self.logger.info("WebSocket server stopped")
-                
             if self.gui_manager:
                 self.gui_manager.stop()
                 self.logger.info("GUI stopped")
@@ -290,14 +376,6 @@ class BotManager:
             runtime_str = str(runtime).split('.')[0]
             
             self.logger.info(f"Bot Manager stopped after running for {runtime_str}")
-            
-            # Send stop message on Telegram
-            if self.telegram:
-                await self.telegram.send_message(
-                    "Bot Manager Stopping\n\n"
-                    f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-                    f"Runtime: {runtime_str}"
-                )
                 
         except Exception as e:
             self.logger.error(f"Error stopping manager: {str(e)}")
@@ -305,14 +383,14 @@ class BotManager:
 def run_app():
     """Application entry point"""
     try:
-        # Print startup message
+        # Print startup banner
         print("\n" + "="*50)
         print("Trading Bot Starting Up")
         print(f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
         print(f"User: {os.getenv('USER', 'Anhbaza01')}")
         print("="*50 + "\n")
 
-        # Create event loop
+        # Create and configure event loop
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         

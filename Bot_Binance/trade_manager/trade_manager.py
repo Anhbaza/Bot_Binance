@@ -1,504 +1,618 @@
 ﻿"""
 Trade Manager Implementation
+Main trading operations and management for Binance trading bot.
+
 Author: Anhbaza01
 Version: 1.0.0
-Last Updated: 2025-05-24 09:19:07 UTC
+Last Updated: 2025-05-24 12:40:18 UTC
 """
 
-import os
-import sys
-import yaml
 import logging
 import asyncio
+import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Union
 from binance.client import Client
+from binance.enums import *
 
-# Add project root to path for imports
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT_ROOT)
+class Trade:
+    """Represents a single trade"""
+    def __init__(self, symbol: str, trade_type: str, entry_price: float, amount: float):
+        self.symbol = symbol
+        self.type = trade_type  # BUY or SELL
+        self.entry_price = entry_price
+        self.amount = amount
+        self.current_price = entry_price
+        self.pnl = 0.0
+        self.pnl_percent = 0.0
+        self.entry_time = datetime.utcnow()
+        self.status = "OPEN"
+        self.stop_loss = None
+        self.take_profit = None
+        self.order_id = None
+        self.position_size = 0.0
+        self.leverage = 1
 
-from trade_manager.order_manager import OrderManager
-from trade_manager.gui_manager import GUIManager
-from shared.websocket_client import WebSocketClient
-from shared.constants import MessageType, ClientType, SignalType
+    def update(self, current_price: float):
+        """Update trade metrics"""
+        self.current_price = current_price
+        if self.type == "BUY":
+            self.pnl = (current_price - self.entry_price) * self.amount
+            self.pnl_percent = ((current_price - self.entry_price) / self.entry_price) * 100
+        else:  # SELL
+            self.pnl = (self.entry_price - current_price) * self.amount
+            self.pnl_percent = ((self.entry_price - current_price) / self.entry_price) * 100
+
+    def set_stop_loss(self, price: float):
+        """Set stop loss price"""
+        self.stop_loss = price
+
+    def set_take_profit(self, price: float):
+        """Set take profit price"""
+        self.take_profit = price
+
+    def to_dict(self) -> Dict:
+        """Convert trade to dictionary"""
+        return {
+            'symbol': self.symbol,
+            'type': self.type,
+            'entry_price': self.entry_price,
+            'current_price': self.current_price,
+            'amount': self.amount,
+            'pnl': self.pnl,
+            'pnl_percent': self.pnl_percent,
+            'entry_time': self.entry_time.strftime('%Y-%m-%d %H:%M:%S'),
+            'status': self.status,
+            'stop_loss': self.stop_loss,
+            'take_profit': self.take_profit,
+            'order_id': self.order_id,
+            'position_size': self.position_size,
+            'leverage': self.leverage
+        }
+
+class Position:
+    """Represents a trading position"""
+    def __init__(self, symbol: str, side: str, amount: float, entry_price: float):
+        self.symbol = symbol
+        self.side = side
+        self.amount = amount
+        self.entry_price = entry_price
+        self.current_price = entry_price
+        self.unrealized_pnl = 0.0
+        self.realized_pnl = 0.0
+        self.timestamp = datetime.utcnow()
+
+    def update(self, current_price: float):
+        """Update position metrics"""
+        self.current_price = current_price
+        multiplier = 1 if self.side == "BUY" else -1
+        self.unrealized_pnl = (current_price - self.entry_price) * self.amount * multiplier
 
 class TradeManager:
-    def __init__(self):
+    """Manages trading operations"""
+    def __init__(self, binance_client: Optional[Client] = None):
         """Initialize Trade Manager"""
-        self.client = None
         self.logger = logging.getLogger('TradeManager')
+        self.client = binance_client
         self.telegram = None
         self._is_running = False
-        self.orders = []
-        self.trades = []
         self.start_time = None
+        self._is_test_mode = True
         
-    def _format_duration(self, seconds: float) -> str:
-        """Format duration in seconds to human readable string"""
-        try:
-            if not seconds:
-                return "0 seconds"
-                
-            duration = timedelta(seconds=int(seconds))
-            days = duration.days
-            hours = duration.seconds // 3600
-            minutes = (duration.seconds % 3600) // 60
-            seconds = duration.seconds % 60
-            
-            parts = []
-            if days > 0:
-                parts.append(f"{days}d")
-            if hours > 0:
-                parts.append(f"{hours}h")
-            if minutes > 0:
-                parts.append(f"{minutes}m")
-            if seconds > 0 or not parts:
-                parts.append(f"{seconds}s")
-                
-            return " ".join(parts)
-            
-        except Exception:
-            return "unknown duration"
+        # Trading data
+        self.active_trades: List[Trade] = []
+        self.closed_trades: List[Trade] = []
+        self.positions: Dict[str, Position] = {}
+        self.price_cache: Dict[str, float] = {}
+        self.order_history: List[Dict] = []
+        
+        # Trading parameters
+        self.max_trades = 10
+        self.risk_per_trade = 0.01  # 1% risk per trade
+        self.max_drawdown = 0.05    # 5% max drawdown
+        self.profit_target = 0.03   # 3% profit target
+        self.stop_loss = 0.02       # 2% stop loss
+        
+        # Performance metrics
+        self.total_pnl = 0.0
+        self.win_count = 0
+        self.loss_count = 0
+        self.best_trade = 0.0
+        self.worst_trade = 0.0
 
-    async def initialize(self, client: Client) -> bool:
-        """Initialize Trade Manager with Binance client"""
+    async def initialize(self) -> bool:
+        """Initialize Trade Manager"""
         try:
             self.start_time = datetime.utcnow()
-            self.client = client
+            self.logger.info("Initializing Trade Manager...")
 
             if not self.client:
-                self.logger.error("No Binance client provided")
+                self.logger.error("Binance client not provided")
                 return False
 
-            # Test API connection
+            # Test connection
             try:
+                server_time = self.client.get_server_time()
+                self.logger.info(
+                    "Trade Manager connected to Binance "
+                    f"(Server Time: {datetime.fromtimestamp(server_time['serverTime']/1000)})"
+                )
+                
+                # Get account info
                 account = self.client.get_account()
-                self.logger.info("Trade Manager initialized successfully")
-                return True
+                balances = {
+                    asset['asset']: float(asset['free']) 
+                    for asset in account['balances'] 
+                    if float(asset['free']) > 0
+                }
+                
+                self.logger.info(f"Account balances loaded: {len(balances)} assets found")
+                
             except Exception as e:
                 self.logger.error(f"Failed to connect to Binance: {str(e)}")
                 return False
 
+            return True
+
         except Exception as e:
-            self.logger.error(f"Trade Manager initialization error: {str(e)}")
+            self.logger.error(f"Error initializing Trade Manager: {str(e)}")
             return False
+
+    async def start(self):
+        """Start Trade Manager"""
+        self._is_running = True
+        self.logger.info("Trade Manager started")
+        
+        # Start monitoring tasks
+        asyncio.create_task(self._monitor_positions())
+        asyncio.create_task(self._monitor_orders())
 
     async def stop(self):
         """Stop Trade Manager"""
+        self._is_running = False
+        
+        # Close all open positions
+        for trade in self.active_trades[:]:
+            await self.close_trade(trade.symbol)
+            
+        # Cancel all open orders
         try:
-            self._is_running = False
+            self.client.cancel_all_orders()
+            self.logger.info("All orders cancelled")
+        except Exception as e:
+            self.logger.error(f"Error cancelling orders: {str(e)}")
             
-            if self.start_time:
-                runtime_seconds = (datetime.utcnow() - self.start_time).total_seconds()
-                runtime_str = self._format_duration(runtime_seconds)
-            else:
-                runtime_str = "unknown duration"
+        self.logger.info("Trade Manager stopped")
+
+    async def _monitor_positions(self):
+        """Monitor open positions"""
+        while self._is_running:
+            try:
+                for trade in self.active_trades:
+                    current_price = self.price_cache.get(trade.symbol)
+                    if not current_price:
+                        continue
+                        
+                    trade.update(current_price)
+                    
+                    # Check stop loss
+                    if trade.stop_loss and (
+                        (trade.type == "BUY" and current_price <= trade.stop_loss) or
+                        (trade.type == "SELL" and current_price >= trade.stop_loss)
+                    ):
+                        await self.close_trade(trade.symbol)
+                        self.logger.info(f"Stop loss triggered for {trade.symbol}")
+                        
+                    # Check take profit
+                    if trade.take_profit and (
+                        (trade.type == "BUY" and current_price >= trade.take_profit) or
+                        (trade.type == "SELL" and current_price <= trade.take_profit)
+                    ):
+                        await self.close_trade(trade.symbol)
+                        self.logger.info(f"Take profit triggered for {trade.symbol}")
+                        
+                await asyncio.sleep(1)
                 
-            self.logger.info(f"Trade Manager stopped after running for {runtime_str}")
+            except Exception as e:
+                self.logger.error(f"Error monitoring positions: {str(e)}")
+                await asyncio.sleep(5)
+
+    async def _monitor_orders(self):
+        """Monitor open orders"""
+        while self._is_running:
+            try:
+                open_orders = self.client.get_open_orders()
+                for order in open_orders:
+                    # Process order updates
+                    order_id = order['orderId']
+                    symbol = order['symbol']
+                    status = order['status']
+                    
+                    # Handle filled orders
+                    if status == ORDER_STATUS_FILLED:
+                        trade = next(
+                            (t for t in self.active_trades if t.order_id == order_id), 
+                            None
+                        )
+                        if trade:
+                            trade.status = "FILLED"
+                            self.logger.info(f"Order filled for {symbol}")
+                            
+                await asyncio.sleep(5)
+                
+            except Exception as e:
+                self.logger.error(f"Error monitoring orders: {str(e)}")
+                await asyncio.sleep(5)
+
+    async def place_trade(
+        self, 
+        symbol: str, 
+        trade_type: str, 
+        amount: float, 
+        price: float
+    ) -> Optional[Trade]:
+        """Place a new trade"""
+        try:
+            if len(self.active_trades) >= self.max_trades:
+                self.logger.warning("Maximum number of trades reached")
+                return None
+
+            # Create order
+            order = None
+            if not self._is_test_mode:
+                order_side = SIDE_BUY if trade_type == "BUY" else SIDE_SELL
+                order = self.client.create_order(
+                    symbol=symbol,
+                    side=order_side,
+                    type=ORDER_TYPE_MARKET,
+                    quantity=amount
+                )
+
+            # Create trade object
+            trade = Trade(symbol, trade_type, price, amount)
+            if order:
+                trade.order_id = order['orderId']
+                
+            # Calculate and set stop loss/take profit
+            if trade_type == "BUY":
+                sl_price = price * (1 - self.stop_loss)
+                tp_price = price * (1 + self.profit_target)
+            else:
+                sl_price = price * (1 + self.stop_loss)
+                tp_price = price * (1 - self.profit_target)
+                
+            trade.set_stop_loss(sl_price)
+            trade.set_take_profit(tp_price)
             
+            self.active_trades.append(trade)
+
+            # Send notification
             if self.telegram:
                 await self.telegram.send_message(
-                    "🛑 Trade Manager Stopping\n\n"
-                    f"Runtime: {runtime_str}\n"
-                    f"Total Orders: {len(self.orders)}\n"
-                    f"Total Trades: {len(self.trades)}"
+                    f"New Trade Opened\n\n"
+                    f"Symbol: {symbol}\n"
+                    f"Type: {trade_type}\n"
+                    f"Entry Price: ${price:,.2f}\n"
+                    f"Amount: {amount}\n"
+                    f"Stop Loss: ${sl_price:,.2f}\n"
+                    f"Take Profit: ${tp_price:,.2f}"
                 )
-        except Exception as e:
-            self.logger.error(f"Error stopping Trade Manager: {str(e)}") 
 
-    def _setup_logging(self) -> logging.Logger:
-        """Setup logging configuration"""
-        try:
-            # Create logs directory
-            logs_dir = os.path.join(PROJECT_ROOT, 'logs')
-            os.makedirs(logs_dir, exist_ok=True)
-            
-            # Log filename
-            log_filename = os.path.join(
-                logs_dir,
-                f'trade_manager_{datetime.utcnow().strftime("%Y%m%d")}.log'
-            )
-            
-            # Configure logging
-            logging.basicConfig(
-                level=logging.INFO,
-                format='%(asctime)s UTC | %(levelname)s | %(message)s',
-                handlers=[
-                    logging.FileHandler(log_filename),
-                    logging.StreamHandler(sys.stdout)
-                ],
-                datefmt='%Y-%m-%d %H:%M:%S'
-            )
-            
-            logger = logging.getLogger("TradeManager")
-            
-            # Log startup
-            logger.info("="*50)
-            logger.info("Trade Manager - Starting Up")
-            logger.info(f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
-            logger.info(f"User: {self.user}")
-            logger.info("="*50)
-            
-            return logger
-            
-        except Exception as e:
-            print(f"Error setting up logging: {str(e)}")
-            logging.basicConfig(level=logging.INFO)
-            return logging.getLogger("TradeManager")
-
-    def _load_config(self) -> Dict:
-        """Load configuration from file"""
-        try:
-            config_path = os.path.join(PROJECT_ROOT, 'config/config.yaml')
-            
-            with open(config_path, 'r') as f:
-                config = yaml.safe_load(f)
-                
-            self.logger.info("Configuration loaded successfully")
-            return config
-            
-        except Exception as e:
-            self.logger.error(f"Error loading config: {str(e)}")
-            return {}
-
-    def _calculate_statistics(self) -> Dict:
-        """Calculate trading statistics"""
-        try:
-            total_trades = len(self.trade_history)
-            if total_trades == 0:
-                return {
-                    'total_trades': 0,
-                    'win_rate': 0.0,
-                    'total_profit': 0.0,
-                    'avg_profit': 0.0
-                }
-                
-            winning_trades = len([
-                t for t in self.trade_history
-                if t['profit'] > 0
-            ])
-            
-            total_profit = sum(
-                t['profit'] for t in self.trade_history
-            )
-            
-            return {
-                'total_trades': total_trades,
-                'win_rate': (winning_trades / total_trades) * 100,
-                'total_profit': total_profit,
-                'avg_profit': total_profit / total_trades
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Error calculating stats: {str(e)}")
-            return {}
-
-    async def setup_binance(self) -> bool:
-        """Setup Binance API client"""
-        try:
-            self.logger.info("Setting up Binance client...")
-            
-            # Get API credentials
-            api_key = self.config['binance'].get('api_key', '')
-            api_secret = self.config['binance'].get('api_secret', '')
-            testnet = self.config['binance'].get('testnet', True)
-            
-            # Initialize client
-            self.client = Client(
-                api_key,
-                api_secret,
-                testnet=testnet
-            )
-            
-            # Test connection
-            server_time = self.client.get_server_time()
-            if not server_time:
-                raise ConnectionError("Could not get server time")
-                
-            self.logger.info("Binance client setup successful")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Binance setup error: {str(e)}")
-            return False
-
-    async def setup_websocket(self) -> bool:
-        """Setup WebSocket client"""
-        try:
-            # Get WebSocket config
-            ws_config = self.config['websocket']
-            
-            # Initialize client
-            self.ws_client = WebSocketClient(
-                name="TradeManager",
-                host=ws_config['host'],
-                port=ws_config['port'],
-                logger=self.logger,
-                message_handler=self._handle_message
-            )
-            
-            # Connect and register
-            if await self.ws_client.connect():
-                await self.ws_client.send_message({
-                    'type': MessageType.REGISTER.value,
-                    'client_type': ClientType.TRADE_MANAGER.value
-                })
-                
-                return True
-                
-            return False
-            
-        except Exception as e:
-            self.logger.error(f"WebSocket setup error: {str(e)}")
-            return False
-
-    async def _handle_message(self, message: Dict):
-        """Handle incoming WebSocket messages"""
-        try:
-            msg_type = message.get('type')
-            
-            if msg_type == MessageType.SIGNAL.value:
-                await self._handle_signal(message['data'])
-                
-            elif msg_type == MessageType.ORDER_UPDATE.value:
-                await self._handle_order_update(message['data'])
-                
-        except Exception as e:
-            self.logger.error(f"Error handling message: {str(e)}")
-
-    async def _handle_signal(self, signal: Dict):
-        """Handle incoming trading signal"""
-        try:
-            symbol = signal['symbol']
-            
-            # Check if already trading this pair
-            if symbol in self.open_trades:
-                self.logger.info(
-                    f"Already trading {symbol}, ignoring signal"
-                )
-                return
-                
-            # Check max trades limit
-            if len(self.open_trades) >= self.config['trading']['max_trades']:
-                self.logger.info("Max trades limit reached")
-                return
-                
-            # Store signal
-            self.active_signals[symbol] = signal
-            
-            # Update GUI
-            if self.gui_manager:
-                self.gui_manager.add_update(
-                    'signals',
-                    list(self.active_signals.values())
-                )
-                
-            self.logger.info(f"New signal for {symbol}")
-            
-        except Exception as e:
-            self.logger.error(f"Error handling signal: {str(e)}")
-
-    async def _handle_order_update(self, update: Dict):
-        """Handle order status update"""
-        try:
-            symbol = update['symbol']
-            order_id = update['orderId']
-            status = update['status']
-            
-            # Get trade info
-            trade = self.open_trades.get(symbol)
-            if not trade:
-                return
-                
-            if status == 'FILLED':
-                # Calculate profit
-                entry = float(trade['entry_price'])
-                exit = float(update['price'])
-                
-                if trade['type'] == SignalType.LONG.value:
-                    profit = (exit - entry) / entry * 100
-                else:
-                    profit = (entry - exit) / entry * 100
-                    
-                # Add to history
-                self.trade_history.append({
-                    'symbol': symbol,
-                    'type': trade['type'],
-                    'entry': entry,
-                    'exit': exit,
-                    'profit': profit,
-                    'time': int(datetime.utcnow().timestamp() * 1000)
-                })
-                
-                # Remove from open trades
-                del self.open_trades[symbol]
-                
-                # Log trade
-                self.logger.info(
-                    f"Closed {symbol} trade with {profit:.2f}% profit"
-                )
-                
-            # Update GUI
-            if self.gui_manager:
-                self.gui_manager.add_update(
-                    'trades',
-                    list(self.open_trades.values())
-                )
-                
-                stats = self._calculate_statistics()
-                self.gui_manager.add_update('stats', stats)
-                
-        except Exception as e:
-            self.logger.error(f"Error handling order update: {str(e)}")
-
-    async def open_trade(self, signal: Dict) -> bool:
-        """Open new trade from signal"""
-        try:
-            symbol = signal['symbol']
-            
-            # Create orders
-            order = await self.order_manager.create_order(
-                symbol=symbol,
-                side=signal['type'],
-                quantity=self.config['trading']['order_size'],
-                price=signal['entry_price'],
-                stop_loss=signal['stop_loss'],
-                take_profit=signal['take_profit']
-            )
-            
-            if not order:
-                return False
-                
-            # Store trade
-            self.open_trades[symbol] = {
-                'symbol': symbol,
-                'type': signal['type'],
-                'entry_price': signal['entry_price'],
-                'take_profit': signal['take_profit'],
-                'stop_loss': signal['stop_loss'],
-                'order': order,
-                'signal': signal,
-                'time': int(datetime.utcnow().timestamp() * 1000)
-            }
-            
-            # Remove signal
-            if symbol in self.active_signals:
-                del self.active_signals[symbol]
-                
-            # Update GUI
-            if self.gui_manager:
-                self.gui_manager.add_update(
-                    'signals',
-                    list(self.active_signals.values())
-                )
-                self.gui_manager.add_update(
-                    'trades',
-                    list(self.open_trades.values())
-                )
-                
-            self.logger.info(f"Opened trade for {symbol}")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Error opening trade: {str(e)}")
-            return False
-
-    async def close_trade(
-        self,
-        symbol: str,
-        reason: str = "Manual"
-    ) -> bool:
-        """Close existing trade"""
-        try:
-            # Get trade info
-            trade = self.open_trades.get(symbol)
-            if not trade:
-                return False
-                
-            # Close position
-            result = await self.order_manager.close_position(
-                symbol,
-                trade['order']['orderId']
-            )
-            
-            if not result:
-                return False
-                
             self.logger.info(
-                f"Closed {symbol} trade - {reason}"
+                f"New {trade_type} trade placed for {symbol} "
+                f"at ${price:,.2f}"
+            )
+            return trade
+
+        except Exception as e:
+            self.logger.error(f"Error placing trade: {str(e)}")
+            return None
+
+    async def close_trade(self, symbol: str) -> bool:
+        """Close an existing trade"""
+        try:
+            trade = next((t for t in self.active_trades if t.symbol == symbol), None)
+            if not trade:
+                self.logger.warning(f"No active trade found for {symbol}")
+                return False
+
+            # Close position if not in test mode
+            if not self._is_test_mode:
+                order_side = SIDE_SELL if trade.type == "BUY" else SIDE_BUY
+                self.client.create_order(
+                    symbol=symbol,
+                    side=order_side,
+                    type=ORDER_TYPE_MARKET,
+                    quantity=trade.amount
+                )
+
+            # Update final P/L
+            if symbol in self.price_cache:
+                trade.update(self.price_cache[symbol])
+
+            # Update statistics
+            self.total_pnl += trade.pnl
+            if trade.pnl > 0:
+                self.win_count += 1
+                self.best_trade = max(self.best_trade, trade.pnl_percent)
+            else:
+                self.loss_count += 1
+                self.worst_trade = min(self.worst_trade, trade.pnl_percent)
+
+            # Move to closed trades
+            self.active_trades.remove(trade)
+            self.closed_trades.append(trade)
+
+            # Send notification
+            if self.telegram:
+                await self.telegram.send_message(
+                    f"Trade Closed\n\n"
+                    f"Symbol: {symbol}\n"
+                    f"Type: {trade.type}\n"
+                    f"Entry: ${trade.entry_price:,.2f}\n"
+                    f"Exit: ${trade.current_price:,.2f}\n"
+                    f"P/L: {trade.pnl_percent:+.2f}%"
+                )
+
+            self.logger.info(
+                f"Closed {trade.type} trade for {symbol} "
+                f"with P/L: {trade.pnl_percent:+.2f}%"
             )
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Error closing trade: {str(e)}")
             return False
 
-    async def run(self):
-        """Run trade manager"""
-        try:
-            # Initialize
-            if not await self.initialize():
-                self.logger.error("Failed to initialize")
-                return
-                
-            self.logger.info("[+] Trade Manager started")
+    async def update_prices(self, prices: Dict[str, float]):
+        """Update current prices and trade metrics"""
+        self.price_cache.update(prices)
+        for trade in self.active_trades:
+            if trade.symbol in prices:
+                trade.update(prices[trade.symbol])
+
+    def get_trade_summary(self) -> Dict:
+        """Get summary of all trades"""
+        total_trades = len(self.closed_trades)
+        win_rate = (self.win_count / total_trades * 100) if total_trades > 0 else 0
+
+        return {
+            'active_trades': len(self.active_trades),
+            'closed_trades': total_trades,
+            'total_pnl': self.total_pnl,
+            'win_rate': win_rate,
+            'win_count': self.win_count,
+            'loss_count': self.loss_count,
+            'best_trade': self.best_trade,
+            'worst_trade': self.worst_trade,
+            'avg_win': (self.total_pnl / self.win_count) if self.win_count > 0 else 0,
+            'avg_loss': (self.total_pnl / self.loss_count) if self.loss_count > 0 else 0
+        }
+
+    def get_active_trades(self) -> List[Dict]:
+        """Get list of active trades"""
+        return [trade.to_dict() for trade in self.active_trades]
+
+    def get_closed_trades(self) -> List[Dict]:
+        """Get list of closed trades"""
+        return [trade.to_dict() for trade in self.closed_trades]
+
+    # ... (previous code remains the same until get_portfolio_metrics method) ...
+
+    def get_portfolio_metrics(self) -> Dict:
+        """Get portfolio performance metrics"""
+        metrics = {
+            'total_pnl': self.total_pnl,
+            'total_trades': len(self.closed_trades),
+            'win_rate': (self.win_count / len(self.closed_trades) * 100) if self.closed_trades else 0,
+            'best_trade': self.best_trade,
+            'worst_trade': self.worst_trade,
+            'active_positions': len(self.active_trades),
+            'avg_trade_duration': self._calculate_avg_trade_duration(),
+            'drawdown': self._calculate_drawdown(),
+            'sharpe_ratio': self._calculate_sharpe_ratio(),
+            'profit_factor': self._calculate_profit_factor(),
+            'last_updated': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        return metrics
+
+    def _calculate_avg_trade_duration(self) -> float:
+        """Calculate average trade duration"""
+        if not self.closed_trades:
+            return 0
             
-            # Start GUI
-            if self.gui_manager:
-                self.gui_manager.start()
+        durations = []
+        for trade in self.closed_trades:
+            duration = (datetime.utcnow() - trade.entry_time).total_seconds() / 3600  # hours
+            durations.append(duration)
+            
+        return sum(durations) / len(durations)
+
+    def _calculate_drawdown(self) -> float:
+        """Calculate maximum drawdown"""
+        if not self.closed_trades:
+            return 0
+            
+        peak = 0
+        max_dd = 0
+        
+        for trade in self.closed_trades:
+            peak = max(peak, trade.pnl)
+            if peak > 0:
+                dd = (peak - trade.pnl) / peak * 100
+                max_dd = max(max_dd, dd)
                 
-            # Keep running
-            while self._is_running:
+        return max_dd
+
+    def _calculate_sharpe_ratio(self, risk_free_rate: float = 0.02) -> float:
+        """Calculate Sharpe ratio"""
+        if not self.closed_trades:
+            return 0
+            
+        returns = [trade.pnl_percent for trade in self.closed_trades]
+        if not returns:
+            return 0
+            
+        avg_return = sum(returns) / len(returns)
+        std_dev = (sum((r - avg_return) ** 2 for r in returns) / len(returns)) ** 0.5
+        
+        if std_dev == 0:
+            return 0
+            
+        return (avg_return - risk_free_rate) / std_dev
+
+    def _calculate_profit_factor(self) -> float:
+        """Calculate profit factor"""
+        total_profit = sum(t.pnl for t in self.closed_trades if t.pnl > 0)
+        total_loss = abs(sum(t.pnl for t in self.closed_trades if t.pnl < 0))
+        
+        return total_profit / total_loss if total_loss != 0 else 0
+
+    def get_risk_metrics(self) -> Dict:
+        """Get risk management metrics"""
+        portfolio_value = sum(t.amount * t.current_price for t in self.active_trades)
+        exposure = sum(t.amount * t.entry_price for t in self.active_trades)
+        
+        metrics = {
+            'portfolio_value': portfolio_value,
+            'total_exposure': exposure,
+            'exposure_ratio': (exposure / portfolio_value * 100) if portfolio_value > 0 else 0,
+            'free_margin': self._calculate_free_margin(),
+            'margin_level': self._calculate_margin_level(),
+            'risk_per_trade': self.risk_per_trade * 100,
+            'max_drawdown': self._calculate_drawdown(),
+            'var_95': self._calculate_var(),
+            'last_updated': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        return metrics
+
+    def _calculate_free_margin(self) -> float:
+        """Calculate free margin"""
+        try:
+            account = self.client.get_account()
+            return float(account['availableBalance'])
+        except:
+            return 0.0
+
+    def _calculate_margin_level(self) -> float:
+        """Calculate margin level"""
+        try:
+            account = self.client.get_account()
+            total_margin = float(account['totalMarginBalance'])
+            used_margin = float(account['totalMaintMargin'])
+            return (total_margin / used_margin * 100) if used_margin > 0 else 0
+        except:
+            return 0.0
+
+    def _calculate_var(self, confidence: float = 0.95) -> float:
+        """Calculate Value at Risk"""
+        if not self.closed_trades:
+            return 0
+            
+        returns = [trade.pnl_percent for trade in self.closed_trades]
+        if not returns:
+            return 0
+            
+        returns.sort()
+        index = int((1 - confidence) * len(returns))
+        return abs(returns[index])
+
+    def export_trade_history(self, format: str = 'csv') -> str:
+        """Export trade history to CSV or JSON"""
+        try:
+            data = []
+            for trade in self.closed_trades:
+                data.append({
+                    'symbol': trade.symbol,
+                    'type': trade.type,
+                    'entry_price': trade.entry_price,
+                    'exit_price': trade.current_price,
+                    'amount': trade.amount,
+                    'pnl': trade.pnl,
+                    'pnl_percent': trade.pnl_percent,
+                    'entry_time': trade.entry_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'exit_time': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+                    'duration': str(datetime.utcnow() - trade.entry_time).split('.')[0],
+                    'status': trade.status
+                })
+                
+            filename = f'trade_history_{datetime.utcnow().strftime("%Y%m%d_%H%M%S")}'
+            
+            if format.lower() == 'csv':
+                import pandas as pd
+                df = pd.DataFrame(data)
+                filepath = f'{filename}.csv'
+                df.to_csv(filepath, index=False)
+            else:
+                import json
+                filepath = f'{filename}.json'
+                with open(filepath, 'w') as f:
+                    json.dump(data, f, indent=4)
+                    
+            return filepath
+            
+        except Exception as e:
+            self.logger.error(f"Error exporting trade history: {str(e)}")
+            return ""
+
+    def get_performance_report(self) -> Dict:
+        """Generate comprehensive performance report"""
+        report = {
+            'summary': self.get_trade_summary(),
+            'portfolio': self.get_portfolio_metrics(),
+            'risk': self.get_risk_metrics(),
+            'active_trades': self.get_active_trades(),
+            'closed_trades': self.get_closed_trades(),
+            'generated_at': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        return report
+
+    async def update_market_data(self):
+        """Update market data periodically"""
+        while self._is_running:
+            try:
+                # Get prices for active trades
+                symbols = [trade.symbol for trade in self.active_trades]
+                if not symbols:
+                    await asyncio.sleep(1)
+                    continue
+                    
+                tickers = self.client.get_symbol_ticker(symbols=symbols)
+                prices = {t['symbol']: float(t['price']) for t in tickers}
+                
+                # Update trade data
+                await self.update_prices(prices)
+                
+                # Update GUI if available
+                if hasattr(self, 'gui_manager') and self.gui_manager:
+                    self.gui_manager.update_trades(self.get_active_trades())
+                    
                 await asyncio.sleep(1)
                 
-        except KeyboardInterrupt:
-            self.logger.info("Trade Manager stopped by user")
-        except Exception as e:
-            self.logger.error(f"Fatal error: {str(e)}")
-        finally:
-            await self.stop()
+            except Exception as e:
+                self.logger.error(f"Error updating market data: {str(e)}")
+                await asyncio.sleep(5)
 
+    def __str__(self) -> str:
+        """String representation of TradeManager"""
+        return (
+            f"TradeManager(active_trades={len(self.active_trades)}, "
+            f"closed_trades={len(self.closed_trades)}, "
+            f"total_pnl={self.total_pnl:,.2f}, "
+            f"win_rate={self.win_count/len(self.closed_trades)*100 if self.closed_trades else 0:.1f}%)"
+        )
 
-def main():
-    """Main function"""
-    try:
-        # Create Trade Manager
-        manager = TradeManager()
-        
-        # Set Windows event loop policy if needed
-        if os.name == 'nt':
-            asyncio.set_event_loop_policy(
-                asyncio.WindowsSelectorEventLoopPolicy()
-            )
-            
-        # Create event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        # Run manager
-        loop.run_until_complete(manager.run())
-        
-    except KeyboardInterrupt:
-        print("\nTrade Manager stopped by user")
-    except Exception as e:
-        print(f"\nFatal error: {str(e)}")
-    finally:
-        try:
-            loop = asyncio.get_event_loop()
-            
-            # Cancel pending tasks
-            tasks = [t for t in asyncio.all_tasks(loop) if not t.done()]
-            if tasks:
-                loop.run_until_complete(
-                    asyncio.gather(*tasks, return_exceptions=True)
-                )
-                
-            # Close loop
-            loop.close()
-            
-        except Exception as e:
-            print(f"\nError during shutdown: {str(e)}")
-
-if __name__ == "__main__":
-    main()
+    def __repr__(self) -> str:
+        """Detailed representation of TradeManager"""
+        return (
+            f"TradeManager("
+            f"active_trades={len(self.active_trades)}, "
+            f"closed_trades={len(self.closed_trades)}, "
+            f"total_pnl={self.total_pnl:,.2f}, "
+            f"win_count={self.win_count}, "
+            f"loss_count={self.loss_count}, "
+            f"best_trade={self.best_trade:,.2f}%, "
+            f"worst_trade={self.worst_trade:,.2f}%, "
+            f"test_mode={self._is_test_mode})"
+        )
