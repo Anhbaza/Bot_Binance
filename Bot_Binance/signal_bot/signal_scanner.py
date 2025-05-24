@@ -29,8 +29,6 @@ class SignalScanner:
         self.telegram = None
         self._is_testnet = getattr(client, 'testnet', False)
         self.pair_manager = pair_manager
-        # Phải như thế này!
-        self.trade_manager = TradeManager(client=self.client, logger=self.logger, pair_manager=self.pair_manager)
 
     async def _load_pairs(self) -> List[str]:
         """Load valid trading pairs"""
