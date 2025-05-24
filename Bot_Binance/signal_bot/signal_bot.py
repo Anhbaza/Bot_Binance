@@ -85,11 +85,12 @@ class SignalBot:
             print(f"Error setting up logging: {str(e)}")
             return logging.getLogger('SignalBot')
 
-    async def initialize(self, client: Client = None) -> bool:
+    async def initialize(self, client: Client) -> bool:
         """Initialize Signal Bot"""
         try:
-            if client:
-                self.client = client
+            self.start_time = datetime.utcnow()
+            self.client = client
+            self._is_testnet = getattr(client, 'testnet', False)
 
             if not self.client:
                 self.logger.error("No Binance client provided")
@@ -97,26 +98,28 @@ class SignalBot:
                 
             # Test API connection
             try:
-                server_time = self.client.get_server_time()
-                if not server_time:
-                    raise ConnectionError("Could not get server time")
+                # For testnet, just check server time
+                if self._is_testnet:
+                    server_time = self.client.get_server_time()
+                    if not server_time:
+                        raise ConnectionError("Could not get server time")
+                else:
+                    # For production, check account access
+                    account = self.client.get_account()
                     
                 self.logger.info("✅ Binance API connection successful")
+                self.logger.info(f"Mode: {'Testnet' if self._is_testnet else 'Production'}")
             except Exception as e:
                 self.logger.error(f"❌ Binance API connection failed: {str(e)}")
                 return False
-
-            # Initialize Scanner
-            self.signal_scanner = SignalScanner(self.client, self.logger)
-            if self.telegram:
-                self.signal_scanner.telegram = self.telegram
 
             # Send initialization message
             if self.telegram:
                 await self.telegram.send_message(
                     "🤖 Signal Bot Initializing\n\n"
                     f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-                    f"User: {os.getenv('USER', 'Anhbaza01')}"
+                    f"User: {os.getenv('USER', 'Anhbaza01')}\n"
+                    f"Mode: {'Testnet' if self._is_testnet else 'Production'}"
                 )
 
             self.logger.info("Signal Bot initialized successfully")
@@ -125,7 +128,6 @@ class SignalBot:
         except Exception as e:
             self.logger.error(f"Signal Bot initialization error: {str(e)}")
             return False
-
 
     def _format_duration(self, seconds: float) -> str:
         """Format duration in seconds to human readable string"""

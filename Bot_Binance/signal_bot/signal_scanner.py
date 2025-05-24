@@ -21,96 +21,52 @@ from signal_bot.signal_analyzer import SignalAnalyzer
 from shared.constants import Config, Interval, TradingMode
 
 class SignalScanner:
-    def __init__(
-        self,
-        client: Client,
-        logger: Optional[logging.Logger] = None
-    ):
+    def __init__(self, client: Client, logger: logging.Logger):
         self.client = client
-        self.logger = logger or logging.getLogger(__name__)
-        self.analyzer = SignalAnalyzer(self.logger)
-        self._is_scanning = False
-        self.telegram = None  # Will be set by SignalBot
-        
-        # Cache
-        self.pairs = []
-        self.last_scan = {}
-        
+        self.logger = logger
+        self.telegram = None
+        self._is_testnet = getattr(client, 'testnet', False)
+
     async def _load_pairs(self) -> List[str]:
-        """Load tradeable pairs"""
+        """Load valid trading pairs"""
         try:
-            pairs = []
-            scan_results = []
+            # Get exchange info
             exchange_info = self.client.get_exchange_info()
             
-            self.logger.info("Starting pairs scan...")
+            # Get all USDT pairs if testnet
+            if self._is_testnet:
+                pairs = [
+                    symbol['symbol'] for symbol in exchange_info['symbols']
+                    if symbol['symbol'].endswith('USDT') and
+                    symbol['status'] == 'TRADING'
+                ]
+                self.logger.info(f"Found {len(pairs)} testnet trading pairs")
+                return pairs[:10]  # Limit to 10 pairs for testing
             
+            # Production mode - check volume
+            valid_pairs = []
             for symbol in exchange_info['symbols']:
-                try:
-                    # Only USDT futures pairs
-                    if not symbol['symbol'].endswith('USDT'):
-                        continue
-                        
-                    if not symbol['isSpotTradingAllowed']:
-                        scan_results.append({
-                            'symbol': symbol['symbol'],
-                            'valid': False,
-                            'reason': 'Not futures tradeable'
-                        })
-                        continue
-                    
-                    # Must be active for trading
-                    if symbol['status'] != 'TRADING':
-                        scan_results.append({
-                            'symbol': symbol['symbol'],
-                            'valid': False,
-                            'reason': 'Not active for trading'
-                        })
-                        continue
-                        
-                    # Check minimum volume
-                    ticker = self.client.get_ticker(symbol=symbol['symbol'])
-                    volume = float(ticker['quoteVolume'])
-                    
-                    if volume < Config.MIN_VOLUME:
-                        scan_results.append({
-                            'symbol': symbol['symbol'],
-                            'valid': False,
-                            'volume': volume,
-                            'reason': f'Volume (${volume:,.0f}) below minimum (${Config.MIN_VOLUME:,.0f})'
-                        })
-                        continue
-                        
-                    # Valid pair
-                    pairs.append(symbol['symbol'])
-                    scan_results.append({
-                        'symbol': symbol['symbol'],
-                        'valid': True,
-                        'volume': volume
-                    })
-                    
-                    self.logger.info(
-                        f"Found valid pair: {symbol['symbol']} - "
-                        f"Volume: ${volume:,.0f}"
-                    )
-                    
-                except Exception as e:
-                    self.logger.error(f"Error scanning {symbol['symbol']}: {str(e)}")
+                if not symbol['symbol'].endswith('USDT'):
                     continue
                     
-            # Send results to Telegram
-            if self.telegram:
-                await self.telegram.send_scan_result(scan_results)
+                # Check 24h volume
+                ticker = self.client.get_ticker(symbol=symbol['symbol'])
+                volume = float(ticker['quoteVolume'])
                 
-            self.logger.info(
-                f"Scan complete. Found {len(pairs)} valid pairs out of "
-                f"{len(exchange_info['symbols'])} total pairs"
-            )
-            return pairs
-                
+                if volume >= Config.MIN_VOLUME:
+                    valid_pairs.append(symbol['symbol'])
+                    self.logger.info(
+                        f"Found valid pair: {symbol['symbol']} - "
+                        f"Volume: ${volume:,.2f}"
+                    )
+            
+            return valid_pairs
+
         except Exception as e:
             self.logger.error(f"Error loading pairs: {str(e)}")
             return []
+        
+   
             
     async def _get_klines(
         self,

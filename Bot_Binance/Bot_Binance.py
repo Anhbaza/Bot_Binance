@@ -31,6 +31,7 @@ class BotManager:
         self.user = os.getenv('USER', 'Anhbaza01')
         self.logger = self._setup_logging()
         self._is_running = True
+        self.start_time = datetime.utcnow()  # Set start time in __init__
 
         # Load config
         self.config = self._load_config()
@@ -43,7 +44,7 @@ class BotManager:
         self.telegram = None
 
     def _setup_logging(self):
-     """Setup logging"""
+     """Setup logging with UTF-8 encoding"""
      try:
         # Create logs directory
         logs_dir = os.path.join(
@@ -67,6 +68,12 @@ class BotManager:
         fh.setLevel(logging.INFO)
 
         # Console handler with UTF-8 encoding
+        # Force UTF-8 encoding for Windows console
+        if os.name == 'nt':
+            import codecs
+            import sys
+            sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
+            
         ch = logging.StreamHandler(sys.stdout)
         ch.setLevel(logging.INFO)
 
@@ -90,7 +97,6 @@ class BotManager:
      except Exception as e:
         print(f"Error setting up logging: {str(e)}")
         return logging.getLogger('BotManager')
-
     def _load_config(self):
      """Load configuration from YAML file"""
      try:
@@ -194,9 +200,22 @@ class BotManager:
             self.logger.error(f"Binance setup error: {str(e)}")
             return None
 
+    def _validate_api_key(self, api_key: str) -> bool:
+     """Validate Binance API key format"""
+     # API key phải có 64 ký tự
+     if not api_key or len(api_key) != 64:
+        return False
+        
+     # API key chỉ chứa chữ và số
+     if not api_key.isalnum():
+        return False
+        
+     return True
+
     async def initialize(self):
      """Initialize Bot Manager"""
      try:
+        self.start_time = datetime.utcnow()
         # Load config
         if not self._load_config():
             return False
@@ -211,7 +230,8 @@ class BotManager:
         if not await self.telegram.send_message(
             "🤖 Trading Bot Starting\n\n"
             f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-            f"User: {os.getenv('USER', 'Anhbaza01')}"
+            f"User: {os.getenv('USER', 'Anhbaza01')}\n"
+            f"Mode: {'Testnet' if self.config.get('testnet', False) else 'Production'}"
         ):
             self.logger.error("Failed to send Telegram message")
             return False
@@ -220,11 +240,32 @@ class BotManager:
 
         # Setup Binance client
         self.logger.info("Setting up Binance client...")
-        self.client = Client(
-            self.config['api_key'],
-            self.config['api_secret']
-        )
-        self.logger.info("Binance client setup successful")
+        try:
+            # Use testnet if configured
+            if self.config.get('testnet', False):
+                self.client = Client(
+                    self.config['api_key'],
+                    self.config['api_secret'],
+                    testnet=True  # Kết nối tới testnet
+                )
+                self.logger.info("Connected to Binance Testnet")
+            else:
+                self.client = Client(
+                    self.config['api_key'],
+                    self.config['api_secret']
+                )
+                self.logger.info("Connected to Binance Production")
+            
+            # Test API connection
+            server_time = self.client.get_server_time()
+            if not server_time:
+                raise Exception("Could not get server time")
+                
+            self.logger.info("Binance client setup successful")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to setup Binance client: {str(e)}")
+            return False
 
         # Initialize Signal Bot
         self.signal_bot = SignalBot()
@@ -303,6 +344,7 @@ class BotManager:
     async def stop(self):
      """Stop Bot Manager"""
      try:
+        self._is_running = False
         # Stop components
         if self.signal_bot:
             await self.signal_bot.stop()
@@ -318,7 +360,12 @@ class BotManager:
             runtime_str = "unknown duration"
 
         self.logger.info(f"Bot Manager stopped after running for {runtime_str}")
-        
+        if self.telegram:
+                await self.telegram.send_message(
+                    "🛑 Bot Manager Stopping\n\n"
+                    f"Runtime: {runtime_str}"
+                )
+                
      except Exception as e:
         self.logger.error(f"Error stopping manager: {str(e)}")
 

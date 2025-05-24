@@ -10,7 +10,7 @@ import sys
 import yaml
 import logging
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from binance.client import Client
 
@@ -33,12 +33,39 @@ class TradeManager:
         self.orders = []
         self.trades = []
         self.start_time = None
+        
+    def _format_duration(self, seconds: float) -> str:
+        """Format duration in seconds to human readable string"""
+        try:
+            if not seconds:
+                return "0 seconds"
+                
+            duration = timedelta(seconds=int(seconds))
+            days = duration.days
+            hours = duration.seconds // 3600
+            minutes = (duration.seconds % 3600) // 60
+            seconds = duration.seconds % 60
+            
+            parts = []
+            if days > 0:
+                parts.append(f"{days}d")
+            if hours > 0:
+                parts.append(f"{hours}h")
+            if minutes > 0:
+                parts.append(f"{minutes}m")
+            if seconds > 0 or not parts:
+                parts.append(f"{seconds}s")
+                
+            return " ".join(parts)
+            
+        except Exception:
+            return "unknown duration"
 
     async def initialize(self, client: Client) -> bool:
         """Initialize Trade Manager with Binance client"""
         try:
-            self.client = client
             self.start_time = datetime.utcnow()
+            self.client = client
 
             if not self.client:
                 self.logger.error("No Binance client provided")
@@ -61,18 +88,24 @@ class TradeManager:
         """Stop Trade Manager"""
         try:
             self._is_running = False
-            runtime = datetime.utcnow() - self.start_time if self.start_time else 0
-            self.logger.info(f"Trade Manager stopped after running for {runtime}")
+            
+            if self.start_time:
+                runtime_seconds = (datetime.utcnow() - self.start_time).total_seconds()
+                runtime_str = self._format_duration(runtime_seconds)
+            else:
+                runtime_str = "unknown duration"
+                
+            self.logger.info(f"Trade Manager stopped after running for {runtime_str}")
             
             if self.telegram:
                 await self.telegram.send_message(
                     "🛑 Trade Manager Stopping\n\n"
-                    f"Runtime: {runtime}\n"
+                    f"Runtime: {runtime_str}\n"
                     f"Total Orders: {len(self.orders)}\n"
                     f"Total Trades: {len(self.trades)}"
                 )
         except Exception as e:
-            self.logger.error(f"Error stopping Trade Manager: {str(e)}")
+            self.logger.error(f"Error stopping Trade Manager: {str(e)}") 
 
     def _setup_logging(self) -> logging.Logger:
         """Setup logging configuration"""
