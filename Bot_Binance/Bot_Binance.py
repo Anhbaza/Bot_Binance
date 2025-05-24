@@ -197,12 +197,6 @@ class BotManager:
     async def initialize(self):
      """Initialize Bot Manager"""
      try:
-        self.logger.info("="*50)
-        self.logger.info("Bot Manager - Starting Up")
-        self.logger.info(f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
-        self.logger.info(f"User: {os.getenv('USER', 'Anhbaza01')}")
-        self.logger.info("="*50)
-
         # Load config
         if not self._load_config():
             return False
@@ -244,13 +238,6 @@ class BotManager:
         if not await self.trade_manager.initialize(self.client):
             return False
 
-        # Setup WebSocket server
-        self.ws_server = WebSocketServer(
-            self.signal_bot,
-            self.trade_manager
-        )
-        await self.ws_server.start()
-
         return True
 
      except Exception as e:
@@ -260,7 +247,7 @@ class BotManager:
     async def run(self):
      """Run Bot Manager"""
      try:
-        # Initialize
+        # Initialize components
         if not await self.initialize():
             self.logger.error("Failed to initialize")
             return
@@ -290,35 +277,50 @@ class BotManager:
         self.logger.error(f"Fatal error: {str(e)}")
      finally:
         await self.stop()
+    def _format_duration(self, seconds: float) -> str:
+     """Format duration in seconds to human readable string"""
+     if not seconds:
+        return "0 seconds"
+        
+     duration = timedelta(seconds=int(seconds))
+     days = duration.days
+     hours = duration.seconds // 3600
+     minutes = (duration.seconds % 3600) // 60
+     seconds = duration.seconds % 60
+    
+     parts = []
+     if days > 0:
+         parts.append(f"{days}d")
+     if hours > 0:
+         parts.append(f"{hours}h")
+     if minutes > 0:
+         parts.append(f"{minutes}m")
+     if seconds > 0 or not parts:
+         parts.append(f"{seconds}s")
+        
+     return " ".join(parts)
+
     async def stop(self):
-        """Stop Bot Manager"""
-        try:
-            self._is_running = False
+     """Stop Bot Manager"""
+     try:
+        # Stop components
+        if self.signal_bot:
+            await self.signal_bot.stop()
+            
+        if self.trade_manager:
+            await self.trade_manager.stop()
 
-            # Stop components
-            if self.signal_bot:
-                await self.signal_bot.stop()
+        # Calculate runtime
+        if hasattr(self, 'start_time') and self.start_time:
+            runtime = datetime.utcnow() - self.start_time
+            runtime_str = self._format_duration(runtime.total_seconds())
+        else:
+            runtime_str = "unknown duration"
 
-            if self.trade_manager:
-                await self.trade_manager.stop()
-
-            if self.gui_manager:
-                self.gui_manager.stop()
-
-            if self.ws_server:
-                await self.ws_server.stop()
-
-            # Send notification
-            if self.telegram:
-                await self.telegram.send_message(
-                    "🛑 Trading Bot Stopped\n\n"
-                    f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
-                )
-
-            self.logger.info("Bot Manager stopped")
-
-        except Exception as e:
-            self.logger.error(f"Error stopping manager: {str(e)}")
+        self.logger.info(f"Bot Manager stopped after running for {runtime_str}")
+        
+     except Exception as e:
+        self.logger.error(f"Error stopping manager: {str(e)}")
 
 def main():
     """Main function"""

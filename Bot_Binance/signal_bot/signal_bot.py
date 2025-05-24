@@ -85,23 +85,16 @@ class SignalBot:
             print(f"Error setting up logging: {str(e)}")
             return logging.getLogger('SignalBot')
 
-    async def initialize(self, client: Client) -> bool:
+    async def initialize(self, client: Client = None) -> bool:
         """Initialize Signal Bot"""
         try:
-            self.start_time = datetime.utcnow()
-            
-            # Log startup
-            self.logger.info("\n" + "="*50)
-            self.logger.info("Signal Bot Initialization")
-            self.logger.info(f"Time: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')} UTC")
-            self.logger.info(f"User: {os.getenv('USER', 'Anhbaza01')}")
-            self.logger.info("="*50 + "\n")
+            if client:
+                self.client = client
 
-            # Initialize components
-            self.client = client
-            self.signal_scanner = SignalScanner(client, self.logger)
-            self.signal_scanner.telegram = self.telegram
-
+            if not self.client:
+                self.logger.error("No Binance client provided")
+                return False
+                
             # Test API connection
             try:
                 server_time = self.client.get_server_time()
@@ -113,24 +106,26 @@ class SignalBot:
                 self.logger.error(f"❌ Binance API connection failed: {str(e)}")
                 return False
 
+            # Initialize Scanner
+            self.signal_scanner = SignalScanner(self.client, self.logger)
+            if self.telegram:
+                self.signal_scanner.telegram = self.telegram
+
             # Send initialization message
             if self.telegram:
                 await self.telegram.send_message(
                     "🤖 Signal Bot Initializing\n\n"
-                    f"Time: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-                    f"User: {os.getenv('USER', 'Anhbaza01')}\n\n"
-                    "Scanning Parameters:\n"
-                    f"- Min Volume: ${Config.MIN_VOLUME:,.0f}\n"
-                    f"- Min Confidence: {Config.MIN_CONFIDENCE}%\n"
-                    f"- Timeframes: {', '.join(Config.TIMEFRAMES)}"
+                    f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+                    f"User: {os.getenv('USER', 'Anhbaza01')}"
                 )
 
             self.logger.info("Signal Bot initialized successfully")
             return True
 
         except Exception as e:
-            self.logger.error(f"Initialization error: {str(e)}")
+            self.logger.error(f"Signal Bot initialization error: {str(e)}")
             return False
+
 
     def _format_duration(self, seconds: float) -> str:
         """Format duration in seconds to human readable string"""

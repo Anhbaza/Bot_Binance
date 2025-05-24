@@ -1,4 +1,4 @@
-"""
+﻿"""
 Trade Manager Implementation
 Author: Anhbaza01
 Version: 1.0.0
@@ -24,26 +24,27 @@ from shared.websocket_client import WebSocketClient
 from shared.constants import MessageType, ClientType, SignalType
 
 class TradeManager:
-    def __init__(self, client=None):
+    def __init__(self):
         """Initialize Trade Manager"""
-        self.client = client
+        self.client = None
         self.logger = logging.getLogger('TradeManager')
         self.telegram = None
         self._is_running = False
         self.orders = []
         self.trades = []
+        self.start_time = None
 
-    async def initialize(self, client=None):
-        """Initialize Trade Manager"""
+    async def initialize(self, client: Client) -> bool:
+        """Initialize Trade Manager with Binance client"""
         try:
-            if client:
-                self.client = client
-                
+            self.client = client
+            self.start_time = datetime.utcnow()
+
             if not self.client:
                 self.logger.error("No Binance client provided")
                 return False
 
-            # Test connection
+            # Test API connection
             try:
                 account = self.client.get_account()
                 self.logger.info("Trade Manager initialized successfully")
@@ -55,6 +56,23 @@ class TradeManager:
         except Exception as e:
             self.logger.error(f"Trade Manager initialization error: {str(e)}")
             return False
+
+    async def stop(self):
+        """Stop Trade Manager"""
+        try:
+            self._is_running = False
+            runtime = datetime.utcnow() - self.start_time if self.start_time else 0
+            self.logger.info(f"Trade Manager stopped after running for {runtime}")
+            
+            if self.telegram:
+                await self.telegram.send_message(
+                    "🛑 Trade Manager Stopping\n\n"
+                    f"Runtime: {runtime}\n"
+                    f"Total Orders: {len(self.orders)}\n"
+                    f"Total Trades: {len(self.trades)}"
+                )
+        except Exception as e:
+            self.logger.error(f"Error stopping Trade Manager: {str(e)}")
 
     def _setup_logging(self) -> logging.Logger:
         """Setup logging configuration"""
@@ -383,32 +401,6 @@ class TradeManager:
             self.logger.error(f"Error closing trade: {str(e)}")
             return False
 
-    async def initialize(self) -> bool:
-        """Initialize Trade Manager"""
-        try:
-            # Setup components
-            if not all([
-                await self.setup_binance(),
-                await self.setup_websocket()
-            ]):
-                return False
-                
-            # Initialize order manager
-            self.order_manager = OrderManager(
-                self.client,
-                self.logger
-            )
-            
-            # Initialize GUI
-            self.gui_manager = GUIManager(self)
-            
-            self.logger.info("Trade Manager initialized successfully")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Initialization error: {str(e)}")
-            return False
-
     async def run(self):
         """Run trade manager"""
         try:
@@ -434,29 +426,6 @@ class TradeManager:
         finally:
             await self.stop()
 
-    async def stop(self):
-        """Stop trade manager"""
-        try:
-            self._is_running = False
-            
-            # Close all trades
-            for symbol in list(self.open_trades.keys()):
-                await self.close_trade(
-                    symbol,
-                    "System shutdown"
-                )
-                
-            # Stop components
-            if self.ws_client:
-                await self.ws_client.stop()
-                
-            if self.gui_manager:
-                self.gui_manager.stop()
-                
-            self.logger.info("Trade Manager stopped")
-            
-        except Exception as e:
-            self.logger.error(f"Error stopping manager: {str(e)}")
 
 def main():
     """Main function"""
