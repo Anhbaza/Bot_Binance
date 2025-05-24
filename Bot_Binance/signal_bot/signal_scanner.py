@@ -12,6 +12,7 @@ import asyncio
 from typing import Dict, List, Optional
 from datetime import datetime
 from binance.client import Client
+from shared.pair_manager import PairManager
 
 # Add project root to path for imports
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -21,15 +22,21 @@ from signal_bot.signal_analyzer import SignalAnalyzer
 from shared.constants import Config, Interval, TradingMode
 
 class SignalScanner:
-    def __init__(self, client: Client, logger: logging.Logger):
+    def __init__(self, client: Client, logger: logging.Logger,pair_manager: PairManager):
         self.client = client
         self.logger = logger
         self.telegram = None
         self._is_testnet = getattr(client, 'testnet', False)
+        self.pair_manager = pair_manager
 
     async def _load_pairs(self) -> List[str]:
         """Load valid trading pairs"""
         try:
+            monitored_pairs = await self.pair_manager.get_pairs_to_scan()
+            if monitored_pairs:
+                # Chỉ quét các cặp được chọn
+                self.logger.info(f"Scanning selected pairs: {monitored_pairs}")
+                return monitored_pairs
             # Get exchange info
             exchange_info = self.client.get_exchange_info()
             

@@ -1,4 +1,4 @@
-"""
+﻿"""
 GUI Manager for Trading Bot
 Author: Anhbaza01
 Version: 1.0.0
@@ -15,7 +15,7 @@ import queue
 import logging
 from typing import Dict, List, Optional
 from datetime import datetime
-
+from shared.pair_manager import PairManager
 # Add project root to path for imports
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -23,13 +23,14 @@ sys.path.insert(0, PROJECT_ROOT)
 from shared.constants import SignalType
 
 class GUIManager:
-    def __init__(self, trade_manager):
+    def __init__(self, trade_manager,pair_manager: PairManager):
         self.trade_manager = trade_manager
         self.root = None
         self.running = False
         self.last_update = datetime.utcnow()
         self.log_queue = queue.Queue()
         self._setup_logger()
+        self.pair_manager = pair_manager
         
         # GUI elements
         self.signal_tree = None
@@ -49,6 +50,57 @@ class GUIManager:
             'total_profit': 0.0,
             'avg_profit': 0.0
         }
+    def _create_control_frame(self, parent):
+        """Tạo khung điều khiển chọn cặp"""
+        frame = ttk.LabelFrame(parent, text="Kiểm soát quét")
+        
+        # Nút chọn chế độ quét
+        scan_mode_frame = ttk.Frame(frame)
+        ttk.Radiobutton(
+            scan_mode_frame,
+            text="Quét tất cả",
+            value="all",
+            command=self._switch_to_all_scan
+        ).pack(side=tk.LEFT)
+        
+        ttk.Radiobutton(
+            scan_mode_frame,
+            text="Chỉ quét đã chọn",
+            value="selected",
+            command=self._switch_to_selected_scan
+        ).pack(side=tk.LEFT)
+        
+        scan_mode_frame.pack(fill=tk.X)
+        
+        # Danh sách cặp được chọn
+        self.pair_list = ttk.Treeview(
+            frame,
+            columns=["Pair", "Status"],
+            show="headings"
+        )
+        self.pair_list.heading("Pair", text="Cặp giao dịch")
+        self.pair_list.heading("Status", text="Trạng thái")
+        self.pair_list.pack(fill=tk.BOTH, expand=True)
+        
+        return frame
+        
+    async def _switch_to_selected_scan(self):
+        """Chuyển sang chế độ quét cặp đã chọn"""
+        selected = self._get_selected_pairs()
+        if not selected:
+            messagebox.showwarning(
+                "Cảnh báo",
+                "Vui lòng chọn ít nhất một cặp để theo dõi"
+            )
+            return
+            
+        await self.pair_manager.set_scan_mode("selected", selected)
+        self.update_status("Đang quét các cặp đã chọn")
+        
+    async def _switch_to_all_scan(self):
+        """Chuyển sang chế độ quét tất cả"""
+        await self.pair_manager.set_scan_mode("all")
+        self.update_status("Đang quét tất cả các cặp")
     def _setup_logger(self):
         """Setup custom logger for GUI"""
         class QueueHandler(logging.Handler):

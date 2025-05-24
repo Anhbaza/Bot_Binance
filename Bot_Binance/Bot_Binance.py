@@ -281,7 +281,7 @@ class BotManager:
                 # Import required modules
                 from signal_bot.signal_bot import SignalBot
                 from trade_manager.trade_manager import TradeManager
-                from gui.gui_manager import GUIManager
+                from trade_manager.gui_manager import GUIManager
 
                 # Initialize SignalBot
                 self.signal_bot = SignalBot()
