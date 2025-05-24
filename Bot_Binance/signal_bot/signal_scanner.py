@@ -20,14 +20,17 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from signal_bot.signal_analyzer import SignalAnalyzer
 from shared.constants import Config, Interval, TradingMode
-
+from signal_bot.signal_bot import SignalBot
+from trade_manager.trade_manager import TradeManager
 class SignalScanner:
-    def __init__(self, client: Client, logger: logging.Logger,pair_manager: PairManager):
+    def __init__(self, client, logger,pair_manager):
         self.client = client
         self.logger = logger
         self.telegram = None
         self._is_testnet = getattr(client, 'testnet', False)
         self.pair_manager = pair_manager
+        # Phải như thế này!
+        self.trade_manager = TradeManager(client=self.client, logger=self.logger, pair_manager=self.pair_manager)
 
     async def _load_pairs(self) -> List[str]:
         """Load valid trading pairs"""

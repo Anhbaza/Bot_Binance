@@ -89,7 +89,6 @@ class Position:
         self.current_price = current_price
         multiplier = 1 if self.side == "BUY" else -1
         self.unrealized_pnl = (current_price - self.entry_price) * self.amount * multiplier
-
 class TradeManager:
     """Manages trading operations"""
     def __init__(self, client, logger, pair_manager):
@@ -101,7 +100,8 @@ class TradeManager:
         self.start_time = None
         self._is_test_mode = True
         self.pair_manager = pair_manager
-        
+        # Phải như thế này!
+        self.trade_manager = TradeManager(client=self.client, logger=self.logger, pair_manager=self.pair_manager) 
         # Trading data
         self.active_trades: List[Trade] = []
         self.closed_trades: List[Trade] = []

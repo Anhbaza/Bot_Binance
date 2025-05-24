@@ -205,7 +205,7 @@ class SignalGenerator:
         except Exception as e:
             self.logger.error(f"Error generating signal for {symbol}: {str(e)}")
             return None
-
+from trade_manager.trade_manager import TradeManager
 class SignalBot:
     def __init__(self, client, logger, pair_manager):
         """Initialize Signal Bot"""
@@ -223,6 +223,8 @@ class SignalBot:
         self.timeframes = ['1m', '5m', '15m', '1h', '4h']
         self.min_volume = 1000000  # Minimum 24h volume in USDT
         self.min_strength = 70     # Minimum signal strength (0-100)
+        # Phải như thế này!
+        self.trade_manager = TradeManager(client=self.client, logger=self.logger, pair_manager=self.pair_manager)  
         
     async def initialize(self) -> bool:
         """Initialize Signal Bot"""
