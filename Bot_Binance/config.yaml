@@ -1,5 +1,7 @@
 ﻿# Bot Configuration
-testnet: true
+test_mode: true
+gui_enabled: true
+ws_enabled: false
 
 # Binance Testnet API Configuration - API key mới từ testnet.binance.vision
 api_key: "6ef4e6c3e0a73ab6175a7bb4322556a76424e46d598324b20e9dcd88557a2293"
@@ -25,7 +27,6 @@ max_orders: 10
 risk_per_trade: 1
 
 # GUI Configuration
-gui_enabled: true
 gui_update_interval: 1
 
 # WebSocket Configuration
