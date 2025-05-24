@@ -27,8 +27,13 @@ import random
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
 from decimal import Decimal, ROUND_DOWN
-from trade_manager import TradeManager, GUIManager 
+# Rest of imports
+from binance.client import Client
 from signal_bot.signal_bot import SignalBot
+from trade_manager.trade_manager import TradeManager
+from shared.telegram_handler import TelegramHandler
+from trade_manager.gui_manager import GUIManager
+from shared.websocket_server import WebSocketServer
 
 
 class MockMarketData:
