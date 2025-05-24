@@ -9,7 +9,10 @@ import os
 import sys
 import tkinter as tk
 from tkinter import ttk, messagebox
+from tkinter import scrolledtext
 import threading
+import queue
+import logging
 from typing import Dict, List, Optional
 from datetime import datetime
 
@@ -25,6 +28,8 @@ class GUIManager:
         self.root = None
         self.running = False
         self.last_update = datetime.utcnow()
+        self.log_queue = queue.Queue()
+        self._setup_logger()
         
         # GUI elements
         self.signal_tree = None
@@ -44,7 +49,64 @@ class GUIManager:
             'total_profit': 0.0,
             'avg_profit': 0.0
         }
+    def _setup_logger(self):
+        """Setup custom logger for GUI"""
+        class QueueHandler(logging.Handler):
+            def __init__(self, queue):
+                super().__init__()
+                self.queue = queue
+
+            def emit(self, record):
+                self.queue.put(record)
+
+        # Create logger
+        self.logger = logging.getLogger('GUI')
+        self.logger.setLevel(logging.INFO)
+
+        # Add queue handler
+        queue_handler = QueueHandler(self.log_queue)
+        queue_handler.setFormatter(
+            logging.Formatter('%(asctime)s UTC | %(levelname)s | %(message)s', 
+                            '%Y-%m-%d %H:%M:%S')
+        )
+        self.logger.addHandler(queue_handler)    
+    def _create_main_window(self):
+        """Create main window"""
+        self.root = tk.Tk()
+        self.root.title("Trading Bot Control Panel")
+        self.root.geometry("800x600")
+
+        # Create main frame
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        # Status frame
+        status_frame = ttk.LabelFrame(main_frame, text="Bot Status", padding="5")
+        status_frame.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E))
         
+        ttk.Label(status_frame, text="Running Time:").grid(row=0, column=0, padx=5)
+        self.runtime_label = ttk.Label(status_frame, text="00:00:00")
+        self.runtime_label.grid(row=0, column=1, padx=5)
+
+        # Control buttons
+        btn_frame = ttk.Frame(main_frame, padding="5")
+        btn_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E))
+        
+        ttk.Button(btn_frame, text="Start Scanning", 
+                   command=self._start_scanning).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Stop Scanning",
+                   command=self._stop_scanning).pack(side=tk.LEFT, padx=5)
+
+        # Log area
+        log_frame = ttk.LabelFrame(main_frame, text="Log Messages", padding="5")
+        log_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=20)
+        self.log_text.pack(fill=tk.BOTH, expand=True)
+
+        # Configure grid weights
+        main_frame.columnconfigure(0, weight=1)
+        main_frame.rowconfigure(2, weight=1)
     def create_gui(self):
         """Create GUI window and elements"""
         # Create main window
