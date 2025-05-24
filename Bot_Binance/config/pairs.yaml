@@ -1,0 +1,164 @@
+# Trading Pairs Configuration
+# Author: Anhbaza01
+# Version: 1.0.0
+# Last Updated: 2025-05-24 08:42:09 UTC
+
+# Default settings for all pairs
+default:
+  enabled: true
+  min_price: 0.00000100  # Minimum price
+  min_volume: 1000000    # Minimum 24h volume in USDT
+  max_spread: 0.5        # Maximum spread %
+  leverage: 1            # Default leverage
+  order_size: 100        # Default order size in USDT
+  risk_per_trade: 1.0    # Risk per trade %
+  take_profit: 2.0       # Take profit %
+  stop_loss: 1.0         # Stop loss %
+
+# Priority pairs (always monitored)
+priority:
+  - BTCUSDT:
+      min_volume: 5000000
+      leverage: 2
+      risk_per_trade: 1.5
+      order_size: 200
+      
+  - ETHUSDT:
+      min_volume: 3000000
+      leverage: 2
+      risk_per_trade: 1.2
+      order_size: 150
+      
+  - BNBUSDT:
+      min_volume: 2000000
+      leverage: 1
+      risk_per_trade: 1.0
+      order_size: 100
+
+# Custom settings for specific pairs
+custom_settings:
+  ADAUSDT:
+    enabled: true
+    min_volume: 1000000
+    leverage: 1
+    risk_per_trade: 0.8
+    
+  DOGEUSDT:
+    enabled: true
+    min_volume: 1500000
+    leverage: 1
+    risk_per_trade: 0.8
+    
+  XRPUSDT:
+    enabled: true
+    min_volume: 2000000
+    leverage: 1
+    risk_per_trade: 1.0
+
+# Excluded pairs (never traded)
+excluded:
+  - USDCUSDT
+  - BUSDUSDT
+  - TUSDUSDT
+  - USTUSDT
+
+# Group settings
+groups:
+  defi:
+    - AAVEUSDT
+    - UNIUSDT
+    - SUSHIUSDT
+    - LINKUSDT
+    settings:
+      min_volume: 1000000
+      leverage: 1
+      risk_per_trade: 0.8
+      
+  gaming:
+    - MANAUSDT
+    - SANDUSDT
+    - AXSUSDT
+    - ENJUSDT
+    settings:
+      min_volume: 800000
+      leverage: 1
+      risk_per_trade: 0.7
+      
+  layer1:
+    - SOLUSDT
+    - AVAXUSDT
+    - MATICUSDT
+    - DOTUSDT
+    settings:
+      min_volume: 2000000
+      leverage: 1
+      risk_per_trade: 1.0
+
+# Volume thresholds
+volume_thresholds:
+  low: 1000000     # 1M USDT
+  medium: 5000000   # 5M USDT
+  high: 10000000    # 10M USDT
+  settings:
+    low:
+      risk_per_trade: 0.5
+      leverage: 1
+    medium:
+      risk_per_trade: 1.0
+      leverage: 1
+    high:
+      risk_per_trade: 1.5
+      leverage: 2
+
+# Time restrictions
+trading_hours:
+  enabled: false
+  timezone: "UTC"
+  sessions:
+    - name: "Asian"
+      start: "00:00"
+      end: "08:00"
+      pairs:
+        - BTCUSDT
+        - ETHUSDT
+    - name: "European"
+      start: "08:00" 
+      end: "16:00"
+      pairs:
+        - BTCUSDT
+        - ETHUSDT
+    - name: "American"
+      start: "16:00"
+      end: "24:00"
+      pairs:
+        - BTCUSDT
+        - ETHUSDT
+
+# Custom indicators
+indicators:
+  rsi:
+    - timeframe: "1h"
+      period: 14
+      overbought: 70
+      oversold: 30
+    - timeframe: "4h"
+      period: 14
+      overbought: 70
+      oversold: 30
+      
+  macd:
+    - timeframe: "1h"
+      fast: 12
+      slow: 26
+      signal: 9
+    - timeframe: "4h"
+      fast: 12
+      slow: 26
+      signal: 9
+
+# Risk management
+risk_management:
+  max_trades_per_pair: 1
+  max_daily_trades: 10
+  max_daily_loss: 3.0    # % of account
+  max_position_size: 5.0  # % of account
