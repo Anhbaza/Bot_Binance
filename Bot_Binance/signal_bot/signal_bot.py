@@ -224,11 +224,10 @@ class SignalBot:
         self.min_volume = 1000000  # Minimum 24h volume in USDT
         self.min_strength = 70     # Minimum signal strength (0-100)
         
-    async def initialize(self, client) -> bool:
+    async def initialize(self) -> bool:
         """Initialize Signal Bot"""
         try:
             self.start_time = datetime.utcnow()
-            self.client = client
             self.signal_generator = SignalGenerator(self.logger)
             
             # Log initialization
