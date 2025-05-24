@@ -207,9 +207,10 @@ class SignalGenerator:
             return None
 
 class SignalBot:
-    def __init__(self):
+    def __init__(self, client, logger, pair_manager):
         """Initialize Signal Bot"""
         self.logger = logging.getLogger("SignalBot")
+        self.pair_manager = pair_manager
         self.signal_generator = None
         self.client = None
         self.telegram = None

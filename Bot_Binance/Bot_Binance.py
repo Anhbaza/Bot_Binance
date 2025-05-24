@@ -20,6 +20,7 @@ import sys
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
+from shared.pair_manager import PairManager
 import asyncio
 import logging
 import yaml
@@ -27,6 +28,7 @@ import random
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
 from decimal import Decimal, ROUND_DOWN
+from signal_bot.signal_scanner import SignalScanner
 # Rest of imports
 from binance.client import Client
 from signal_bot.signal_bot import SignalBot
@@ -138,6 +140,7 @@ class BotManager:
     
     def __init__(self):
         """Initialize Bot Manager"""
+        self.pair_manager = PairManager()
         self.config: Dict = {}
         self.logger = self._setup_logging()
         self.client = MockBinanceClient()
@@ -150,6 +153,17 @@ class BotManager:
         self.market_data = MockMarketData()
         self.last_price_update = datetime.utcnow()
         self.price_update_interval = 1.0  # seconds
+        self.signal_scanner = SignalScanner(
+            client=self.client,
+            logger=self.logger,
+            pair_manager=self.pair_manager  # Truyền pair_manager vào
+        )
+        
+        self.trade_manager = TradeManager(
+            client=self.client,
+            logger=self.logger,
+            pair_manager=self.pair_manager  # Truyền pair_manager vào
+        )
 
     def _setup_logging(self) -> logging.Logger:
         """Setup logging configuration"""
@@ -283,19 +297,28 @@ class BotManager:
                 from trade_manager.trade_manager import TradeManager
                 from trade_manager.gui_manager import GUIManager
 
-                # Initialize SignalBot
-                self.signal_bot = SignalBot()
-                if not await self.signal_bot.initialize(self.client):
+                 # Initialize Signal Bot với pair_manager
+                self.signal_bot = SignalBot(
+                    client=self.client,
+                    logger=self.logger,
+                    pair_manager=self.pair_manager
+                )
+                if not await self.signal_bot.initialize():
                     self.logger.error("Failed to initialize SignalBot")
                     return False
                 self.logger.info("Signal Bot initialized successfully")
 
-                # Initialize TradeManager
-                self.trade_manager = TradeManager(self.client)
+                # Initialize TradeManager với pair_manager
+                self.trade_manager = TradeManager(
+                    client=self.client,
+                    logger=self.logger,
+                    pair_manager=self.pair_manager
+                )
                 if not await self.trade_manager.initialize():
                     self.logger.error("Failed to initialize TradeManager")
                     return False
                 self.logger.info("Trade Manager initialized successfully")
+
 
                 # Initialize GUI if enabled
                 if self.config.get('gui_enabled', True):

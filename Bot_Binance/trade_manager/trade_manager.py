@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Union
 from binance.client import Client
 from binance.enums import *
+from shared.pair_manager import PairManager
 
 class Trade:
     """Represents a single trade"""
@@ -91,14 +92,15 @@ class Position:
 
 class TradeManager:
     """Manages trading operations"""
-    def __init__(self, binance_client: Optional[Client] = None):
+    def __init__(self, client, logger, pair_manager):
         """Initialize Trade Manager"""
         self.logger = logging.getLogger('TradeManager')
-        self.client = binance_client
+        self.client = client
         self.telegram = None
         self._is_running = False
         self.start_time = None
         self._is_test_mode = True
+        self.pair_manager = pair_manager
         
         # Trading data
         self.active_trades: List[Trade] = []
