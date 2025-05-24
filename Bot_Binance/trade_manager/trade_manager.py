@@ -123,7 +123,7 @@ class TradeManager:
         self.best_trade = 0.0
         self.worst_trade = 0.0
 
-    async def initialize(self) -> bool:
+    async def initialize(self):
         """Initialize Trade Manager"""
         try:
             self.start_time = datetime.utcnow()

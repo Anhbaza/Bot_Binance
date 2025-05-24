@@ -209,6 +209,8 @@ class SignalGenerator:
 class SignalBot:
     def __init__(self, client, logger, pair_manager):
         """Initialize Signal Bot"""
+        self.client = client  # Sử dụng client được truyền vào
+        self.logger = logger  # Sử dụng logger được truyền vào
         self.logger = logging.getLogger("SignalBot")
         self.pair_manager = pair_manager
         self.signal_generator = None
@@ -222,7 +224,7 @@ class SignalBot:
         self.min_volume = 1000000  # Minimum 24h volume in USDT
         self.min_strength = 70     # Minimum signal strength (0-100)
         
-    async def initialize(self, client=None) -> bool:
+    async def initialize(self, client) -> bool:
         """Initialize Signal Bot"""
         try:
             self.start_time = datetime.utcnow()

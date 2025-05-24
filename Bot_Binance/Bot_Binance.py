@@ -36,6 +36,7 @@ from trade_manager.trade_manager import TradeManager
 from shared.telegram_handler import TelegramHandler
 from trade_manager.gui_manager import GUIManager
 from shared.websocket_server import WebSocketServer
+from shared.mock_binance import MockBinanceClient
 
 
 class MockMarketData:
@@ -140,30 +141,17 @@ class BotManager:
     
     def __init__(self):
         """Initialize Bot Manager"""
-        self.pair_manager = PairManager()
         self.config: Dict = {}
         self.logger = self._setup_logging()
         self.client = MockBinanceClient()
+        self.pair_manager = PairManager()
         self.telegram = None
         self.signal_bot = None
         self.trade_manager = None
         self.gui_manager = None
         self._is_running = False
         self.start_time = datetime.utcnow()
-        self.market_data = MockMarketData()
-        self.last_price_update = datetime.utcnow()
-        self.price_update_interval = 1.0  # seconds
-        self.signal_scanner = SignalScanner(
-            client=self.client,
-            logger=self.logger,
-            pair_manager=self.pair_manager  # Truyền pair_manager vào
-        )
-        
-        self.trade_manager = TradeManager(
-            client=self.client,
-            logger=self.logger,
-            pair_manager=self.pair_manager  # Truyền pair_manager vào
-        )
+
 
     def _setup_logging(self) -> logging.Logger:
         """Setup logging configuration"""
