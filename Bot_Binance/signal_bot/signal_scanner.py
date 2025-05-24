@@ -1,4 +1,4 @@
-"""
+﻿"""
 Signal Scanner Implementation
 Author: Anhbaza01
 Version: 1.0.0
@@ -33,36 +33,73 @@ class SignalScanner:
         # Load trading pairs
         self.pairs = self._load_pairs()
         
+    # Thêm vào phương thức _load_pairs():
+
     def _load_pairs(self) -> List[str]:
-        """Load tradeable pairs"""
-        try:
-            pairs = []
-            exchange_info = self.client.get_exchange_info()
-            
-            for symbol in exchange_info['symbols']:
-                # Only USDT pairs
+     """Load tradeable pairs"""
+     try:
+        pairs = []
+        scan_results = []
+        exchange_info = self.client.get_exchange_info()
+        
+        self.logger.info("Starting pairs scan...")
+        
+        for symbol in exchange_info['symbols']:
+            try:
+                # Only USDT futures pairs
                 if not symbol['symbol'].endswith('USDT'):
                     continue
                     
-                # Must be active and spot trading
+                if not symbol['symbol'].startswith(('BTC','ETH','BNB')):
+                    continue
+                
+                # Must be active and futures trading
                 if (symbol['status'] != 'TRADING' or
-                    symbol['isSpotTradingAllowed'] is False):
+                    not symbol['isSpotTradingAllowed']):
+                    scan_results.append({
+                        'symbol': symbol['symbol'],
+                        'valid': False,
+                        'reason': 'Not active or not futures'
+                    })
                     continue
                     
                 # Check minimum volume
                 ticker = self.client.get_ticker(symbol=symbol['symbol'])
                 volume = float(ticker['quoteVolume'])
+                
                 if volume < Config.MIN_VOLUME:
+                    scan_results.append({
+                        'symbol': symbol['symbol'],
+                        'valid': False,
+                        'volume': volume,
+                        'reason': 'Insufficient volume'
+                    })
                     continue
                     
+                # Valid pair
                 pairs.append(symbol['symbol'])
+                scan_results.append({
+                    'symbol': symbol['symbol'],
+                    'valid': True,
+                    'volume': volume
+                })
                 
-            self.logger.info(f"Loaded {len(pairs)} trading pairs")
-            return pairs
+            except Exception as e:
+                self.logger.error(f"Error scanning {symbol['symbol']}: {str(e)}")
+                continue
+                
+        # Send results to Telegram
+        if hasattr(self, 'telegram'):
+            asyncio.create_task(
+                self.telegram.send_scan_result(scan_results)
+            )
             
-        except Exception as e:
-            self.logger.error(f"Error loading pairs: {str(e)}")
-            return []
+        self.logger.info(f"Scan complete. Found {len(pairs)} valid pairs")
+        return pairs
+            
+     except Exception as e:
+        self.logger.error(f"Error loading pairs: {str(e)}")
+        return []
 
     async def scan_pair(
         self,
