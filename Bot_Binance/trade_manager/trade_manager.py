@@ -1,9 +1,8 @@
 """
-Trade Manager Bot
-Main bot implementation for managing trades
+Trade Manager Implementation
 Author: Anhbaza01
 Version: 1.0.0
-Last Updated: 2025-05-24 08:35:10
+Last Updated: 2025-05-24 09:19:07 UTC
 """
 
 import os
@@ -14,19 +13,15 @@ import asyncio
 from datetime import datetime
 from typing import Dict, List, Optional
 from binance.client import Client
-from binance.exceptions import BinanceAPIException
 
-from .order_manager import OrderManager
-from .gui_manager import GUIManager
-from ..shared.websocket_client import WebSocketClient
-from ..database.db_manager import DatabaseManager
-from ..shared.constants import (
-    SignalType,
-    MessageType,
-    ClientType,
-    OrderStatus,
-    TradingConfig as Config
-)
+# Add project root to path for imports
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
+
+from trade_manager.order_manager import OrderManager
+from trade_manager.gui_manager import GUIManager
+from shared.websocket_client import WebSocketClient
+from shared.constants import MessageType, ClientType, SignalType
 
 class TradeManager:
     def __init__(self):
@@ -39,25 +34,23 @@ class TradeManager:
         self.order_manager = None
         self.gui_manager = None
         self.ws_client = None
-        self.db = None
+        
+        # State
+        self.open_trades = {}
+        self.trade_history = []
+        self.active_signals = {}
         
         # Load config
         self.config = self._load_config()
-        
-        # Trading state
-        self.active_signals = {}
-        self.open_trades = {}
-        self.watched_pairs = set()
 
     def _setup_logging(self) -> logging.Logger:
         """Setup logging configuration"""
         try:
             # Create logs directory
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            logs_dir = os.path.join(current_dir, '../logs')
+            logs_dir = os.path.join(PROJECT_ROOT, 'logs')
             os.makedirs(logs_dir, exist_ok=True)
             
-            # Log filename with timestamp
+            # Log filename
             log_filename = os.path.join(
                 logs_dir,
                 f'trade_manager_{datetime.utcnow().strftime("%Y%m%d")}.log'
@@ -76,11 +69,10 @@ class TradeManager:
             
             logger = logging.getLogger("TradeManager")
             
-            # Log startup info
+            # Log startup
             logger.info("="*50)
-            logger.info("Trade Manager Bot - Logging Initialized")
-            logger.info(f"Log File: {log_filename}")
-            logger.info(f"Current Time (UTC): {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info("Trade Manager - Starting Up")
+            logger.info(f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
             logger.info(f"User: {self.user}")
             logger.info("="*50)
             
@@ -94,10 +86,7 @@ class TradeManager:
     def _load_config(self) -> Dict:
         """Load configuration from file"""
         try:
-            config_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                '../config/config.yaml'
-            )
+            config_path = os.path.join(PROJECT_ROOT, 'config/config.yaml')
             
             with open(config_path, 'r') as f:
                 config = yaml.safe_load(f)
@@ -107,6 +96,38 @@ class TradeManager:
             
         except Exception as e:
             self.logger.error(f"Error loading config: {str(e)}")
+            return {}
+
+    def _calculate_statistics(self) -> Dict:
+        """Calculate trading statistics"""
+        try:
+            total_trades = len(self.trade_history)
+            if total_trades == 0:
+                return {
+                    'total_trades': 0,
+                    'win_rate': 0.0,
+                    'total_profit': 0.0,
+                    'avg_profit': 0.0
+                }
+                
+            winning_trades = len([
+                t for t in self.trade_history
+                if t['profit'] > 0
+            ])
+            
+            total_profit = sum(
+                t['profit'] for t in self.trade_history
+            )
+            
+            return {
+                'total_trades': total_trades,
+                'win_rate': (winning_trades / total_trades) * 100,
+                'total_profit': total_profit,
+                'avg_profit': total_profit / total_trades
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating stats: {str(e)}")
             return {}
 
     async def setup_binance(self) -> bool:
@@ -138,36 +159,6 @@ class TradeManager:
             self.logger.error(f"Binance setup error: {str(e)}")
             return False
 
-    async def setup_database(self) -> bool:
-        """Setup database connection"""
-        try:
-            self.logger.info("Setting up database...")
-            
-            # Get paths
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            db_path = os.path.join(
-                current_dir,
-                '../database/trading.db'
-            )
-            schema_path = os.path.join(
-                current_dir,
-                '../database/schema.sql'
-            )
-            
-            # Initialize database
-            self.db = DatabaseManager(
-                db_path,
-                schema_path,
-                self.logger
-            )
-            
-            self.logger.info("Database setup successful")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Database setup error: {str(e)}")
-            return False
-
     async def setup_websocket(self) -> bool:
         """Setup WebSocket client"""
         try:
@@ -179,23 +170,17 @@ class TradeManager:
                 name="TradeManager",
                 host=ws_config['host'],
                 port=ws_config['port'],
-                logger=self.logger
+                logger=self.logger,
+                message_handler=self._handle_message
             )
             
             # Connect and register
             if await self.ws_client.connect():
                 await self.ws_client.send_message({
                     'type': MessageType.REGISTER.value,
-                    'client_type': ClientType.TRADE_BOT.value
+                    'client_type': ClientType.TRADE_MANAGER.value
                 })
                 
-                # Register message handlers
-                self.ws_client.register_handler(
-                    MessageType.SIGNAL.value,
-                    self.handle_signal
-                )
-                
-                asyncio.create_task(self.ws_client.listen())
                 return True
                 
             return False
@@ -204,51 +189,115 @@ class TradeManager:
             self.logger.error(f"WebSocket setup error: {str(e)}")
             return False
 
-    async def handle_signal(self, signal: Dict):
+    async def _handle_message(self, message: Dict):
+        """Handle incoming WebSocket messages"""
+        try:
+            msg_type = message.get('type')
+            
+            if msg_type == MessageType.SIGNAL.value:
+                await self._handle_signal(message['data'])
+                
+            elif msg_type == MessageType.ORDER_UPDATE.value:
+                await self._handle_order_update(message['data'])
+                
+        except Exception as e:
+            self.logger.error(f"Error handling message: {str(e)}")
+
+    async def _handle_signal(self, signal: Dict):
         """Handle incoming trading signal"""
         try:
             symbol = signal['symbol']
-            signal_type = signal['type']
             
-            self.logger.info(
-                f"Received {signal_type} signal for {symbol}"
-            )
-            
-            # Check if we can trade
-            if len(self.open_trades) >= Config.MAX_TRADES:
-                self.logger.warning("Maximum trades reached")
+            # Check if already trading this pair
+            if symbol in self.open_trades:
+                self.logger.info(
+                    f"Already trading {symbol}, ignoring signal"
+                )
                 return
                 
-            if symbol in self.open_trades:
-                self.logger.warning(f"Already trading {symbol}")
+            # Check max trades limit
+            if len(self.open_trades) >= self.config['trading']['max_trades']:
+                self.logger.info("Max trades limit reached")
                 return
                 
             # Store signal
-            signal_id = f"{symbol}_{signal['time']}"
-            self.active_signals[signal_id] = signal
+            self.active_signals[symbol] = signal
             
             # Update GUI
             if self.gui_manager:
-                self.gui_manager.update_signals(
+                self.gui_manager.add_update(
+                    'signals',
                     list(self.active_signals.values())
                 )
                 
-            # Add to database
-            await self.db.add_signal(signal)
+            self.logger.info(f"New signal for {symbol}")
             
         except Exception as e:
             self.logger.error(f"Error handling signal: {str(e)}")
+
+    async def _handle_order_update(self, update: Dict):
+        """Handle order status update"""
+        try:
+            symbol = update['symbol']
+            order_id = update['orderId']
+            status = update['status']
+            
+            # Get trade info
+            trade = self.open_trades.get(symbol)
+            if not trade:
+                return
+                
+            if status == 'FILLED':
+                # Calculate profit
+                entry = float(trade['entry_price'])
+                exit = float(update['price'])
+                
+                if trade['type'] == SignalType.LONG.value:
+                    profit = (exit - entry) / entry * 100
+                else:
+                    profit = (entry - exit) / entry * 100
+                    
+                # Add to history
+                self.trade_history.append({
+                    'symbol': symbol,
+                    'type': trade['type'],
+                    'entry': entry,
+                    'exit': exit,
+                    'profit': profit,
+                    'time': int(datetime.utcnow().timestamp() * 1000)
+                })
+                
+                # Remove from open trades
+                del self.open_trades[symbol]
+                
+                # Log trade
+                self.logger.info(
+                    f"Closed {symbol} trade with {profit:.2f}% profit"
+                )
+                
+            # Update GUI
+            if self.gui_manager:
+                self.gui_manager.add_update(
+                    'trades',
+                    list(self.open_trades.values())
+                )
+                
+                stats = self._calculate_statistics()
+                self.gui_manager.add_update('stats', stats)
+                
+        except Exception as e:
+            self.logger.error(f"Error handling order update: {str(e)}")
 
     async def open_trade(self, signal: Dict) -> bool:
         """Open new trade from signal"""
         try:
             symbol = signal['symbol']
             
-            # Create order
+            # Create orders
             order = await self.order_manager.create_order(
                 symbol=symbol,
                 side=signal['type'],
-                quantity=Config.ORDER_SIZE,
+                quantity=self.config['trading']['order_size'],
                 price=signal['entry_price'],
                 stop_loss=signal['stop_loss'],
                 take_profit=signal['take_profit']
@@ -257,41 +306,34 @@ class TradeManager:
             if not order:
                 return False
                 
-            # Add to database
-            trade_id = await self.db.add_trade({
+            # Store trade
+            self.open_trades[symbol] = {
                 'symbol': symbol,
                 'type': signal['type'],
                 'entry_price': signal['entry_price'],
                 'take_profit': signal['take_profit'],
                 'stop_loss': signal['stop_loss'],
-                'quantity': Config.ORDER_SIZE,
-                'reason': signal.get('reason', '')
-            })
-            
-            if not trade_id:
-                # Cancel order if database fails
-                await self.order_manager.cancel_order(
-                    symbol,
-                    order['orderId']
-                )
-                return False
-                
-            # Store trade
-            self.open_trades[symbol] = {
-                'id': trade_id,
                 'order': order,
-                'signal': signal
+                'signal': signal,
+                'time': int(datetime.utcnow().timestamp() * 1000)
             }
             
+            # Remove signal
+            if symbol in self.active_signals:
+                del self.active_signals[symbol]
+                
             # Update GUI
             if self.gui_manager:
-                self.gui_manager.update_trades(
+                self.gui_manager.add_update(
+                    'signals',
+                    list(self.active_signals.values())
+                )
+                self.gui_manager.add_update(
+                    'trades',
                     list(self.open_trades.values())
                 )
                 
-            self.logger.info(
-                f"Opened {signal['type']} trade for {symbol}"
-            )
+            self.logger.info(f"Opened trade for {symbol}")
             return True
             
         except Exception as e:
@@ -301,16 +343,15 @@ class TradeManager:
     async def close_trade(
         self,
         symbol: str,
-        reason: str
+        reason: str = "Manual"
     ) -> bool:
         """Close existing trade"""
         try:
-            if symbol not in self.open_trades:
-                self.logger.warning(f"No open trade for {symbol}")
+            # Get trade info
+            trade = self.open_trades.get(symbol)
+            if not trade:
                 return False
                 
-            trade = self.open_trades[symbol]
-            
             # Close position
             result = await self.order_manager.close_position(
                 symbol,
@@ -320,61 +361,14 @@ class TradeManager:
             if not result:
                 return False
                 
-            # Update database
-            updated = await self.db.close_trade(
-                trade['id'],
-                result['price'],
-                reason
+            self.logger.info(
+                f"Closed {symbol} trade - {reason}"
             )
-            
-            if not updated:
-                return False
-                
-            # Remove trade
-            del self.open_trades[symbol]
-            
-            # Update GUI
-            if self.gui_manager:
-                self.gui_manager.update_trades(
-                    list(self.open_trades.values())
-                )
-                
-            self.logger.info(f"Closed trade for {symbol}")
             return True
             
         except Exception as e:
             self.logger.error(f"Error closing trade: {str(e)}")
             return False
-
-    async def check_trades(self):
-        """Check and update open trades"""
-        try:
-            for symbol, trade in self.open_trades.items():
-                # Get current price
-                ticker = await self.order_manager.get_ticker(symbol)
-                if not ticker:
-                    continue
-                    
-                price = float(ticker['price'])
-                
-                # Check stop loss and take profit
-                entry = trade['signal']['entry_price']
-                sl = trade['signal']['stop_loss']
-                tp = trade['signal']['take_profit']
-                
-                if trade['signal']['type'] == SignalType.LONG.value:
-                    if price <= sl:
-                        await self.close_trade(symbol, "Stop loss")
-                    elif price >= tp:
-                        await self.close_trade(symbol, "Take profit")
-                else:
-                    if price >= sl:
-                        await self.close_trade(symbol, "Stop loss")
-                    elif price <= tp:
-                        await self.close_trade(symbol, "Take profit")
-                        
-        except Exception as e:
-            self.logger.error(f"Error checking trades: {str(e)}")
 
     async def initialize(self) -> bool:
         """Initialize Trade Manager"""
@@ -382,7 +376,6 @@ class TradeManager:
             # Setup components
             if not all([
                 await self.setup_binance(),
-                await self.setup_database(),
                 await self.setup_websocket()
             ]):
                 return False
@@ -396,24 +389,6 @@ class TradeManager:
             # Initialize GUI
             self.gui_manager = GUIManager(self)
             
-            # Load existing trades
-            trades = await self.db.get_trades(status='OPEN')
-            for trade in trades:
-                self.open_trades[trade['symbol']] = {
-                    'id': trade['id'],
-                    'order': {
-                        'orderId': trade.get('order_id'),
-                        'status': trade['status']
-                    },
-                    'signal': {
-                        'symbol': trade['symbol'],
-                        'type': trade['type'],
-                        'entry_price': trade['entry_price'],
-                        'take_profit': trade['take_profit'],
-                        'stop_loss': trade['stop_loss']
-                    }
-                }
-                
             self.logger.info("Trade Manager initialized successfully")
             return True
             
@@ -422,7 +397,7 @@ class TradeManager:
             return False
 
     async def run(self):
-        """Main bot loop"""
+        """Run trade manager"""
         try:
             # Initialize
             if not await self.initialize():
@@ -435,40 +410,40 @@ class TradeManager:
             if self.gui_manager:
                 self.gui_manager.start()
                 
-            # Main loop
+            # Keep running
             while self._is_running:
-                try:
-                    # Check trades every second
-                    await self.check_trades()
-                    
-                    # Update database statistics
-                    await self.db.update_statistics()
-                    
-                    # Wait for next iteration
-                    await asyncio.sleep(1)
-                    
-                except Exception as e:
-                    self.logger.error(f"Error in main loop: {str(e)}")
-                    await asyncio.sleep(5)
-                    
+                await asyncio.sleep(1)
+                
         except KeyboardInterrupt:
             self.logger.info("Trade Manager stopped by user")
         except Exception as e:
             self.logger.error(f"Fatal error: {str(e)}")
         finally:
-            # Cleanup
+            await self.stop()
+
+    async def stop(self):
+        """Stop trade manager"""
+        try:
             self._is_running = False
             
+            # Close all trades
+            for symbol in list(self.open_trades.keys()):
+                await self.close_trade(
+                    symbol,
+                    "System shutdown"
+                )
+                
+            # Stop components
             if self.ws_client:
                 await self.ws_client.stop()
                 
             if self.gui_manager:
                 self.gui_manager.stop()
                 
-            if self.db:
-                self.db.close()
-                
             self.logger.info("Trade Manager stopped")
+            
+        except Exception as e:
+            self.logger.error(f"Error stopping manager: {str(e)}")
 
 def main():
     """Main function"""
